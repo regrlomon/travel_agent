@@ -1,3 +1,4 @@
+# Loaded via litellm.Router or manually with os.path.expandvars() substitution
 model: deepseek/deepseek-chat
 api_key: ${LLM_API_KEY}
 temperature: 0.2

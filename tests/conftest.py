@@ -15,17 +15,16 @@ def mock_redis(mocker):
 
 @pytest.fixture
 def mock_litellm(mocker):
-    async def fake_completion(**kwargs):
-        content = kwargs.get("_mock_content", '{"result": "mocked"}')
-        m = MagicMock()
-        m.choices[0].message.content = content
-        return m
-    mocker.patch("litellm.acompletion", side_effect=fake_completion)
+    mock = AsyncMock()
+    mock.return_value.choices[0].message.content = '{"result": "mocked"}'
+    mocker.patch("litellm.acompletion", mock)
+    return mock
 
 
 @pytest.fixture
 def sample_state():
     return {
+        "job_id": "test-job",
         "destination": "川西",
         "origin": "苏州",
         "duration_days": 7,
