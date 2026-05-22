@@ -69,23 +69,29 @@ compose_output
 
 ### `agent/graph.py` 改动
 
+> **修正（Blocker #3）**：`RedisSaver.from_conn_string()` 是 context manager，不能直接赋值。Checkpointer 生命周期由 Celery task 管理（每次任务进入时 `with` 打开）。`graph.py` 只暴露 `build_compiled_graph(checkpointer)` 工厂函数，不在模块级别持有 checkpointer。
+
 ```python
+from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.redis import RedisSaver
-from agent.tools_container import build_tools
+from agent.state import TravelPlanState
+import agent.nodes.parse_input   as parse_input
+import agent.nodes.discover_pois as discover_pois
+import agent.nodes.scrape_flights as scrape_flights
+import agent.nodes.human_review  as human_review
+import agent.nodes.plan_itinerary as plan_itinerary
+import agent.nodes.compose_output as compose_output
 
-def build_graph():
-    tools = build_tools()                            # 工具注入
-    checkpointer = RedisSaver.from_conn_string(      # Redis Checkpointer
-        os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    )
 
+def build_compiled_graph(checkpointer):
+    """返回编译后的 graph，checkpointer 由调用方（Celery task）持有并管理生命周期。"""
     g = StateGraph(TravelPlanState)
-    g.add_node("parse_input",     parse_input.run)
-    g.add_node("discover_pois",   discover_pois.run)
-    g.add_node("scrape_flights",  scrape_flights.run)
-    g.add_node("human_review",    human_review.run)   # 新增
-    g.add_node("plan_itinerary",  plan_itinerary.run)
-    g.add_node("compose_output",  compose_output.run)
+    g.add_node("parse_input",    parse_input.run)
+    g.add_node("discover_pois",  discover_pois.run)
+    g.add_node("scrape_flights", scrape_flights.run)
+    g.add_node("human_review",   human_review.run)
+    g.add_node("plan_itinerary", plan_itinerary.run)
+    g.add_node("compose_output", compose_output.run)
 
     g.set_entry_point("parse_input")
     g.add_edge("parse_input",    "discover_pois")
@@ -96,8 +102,8 @@ def build_graph():
     g.add_edge("plan_itinerary", "compose_output")
     g.add_edge("compose_output", END)
 
-    graph = g.compile(checkpointer=checkpointer)
-    return graph.with_config({"configurable": {"tools": tools}})
+    return g.compile(checkpointer=checkpointer)
+    # 注意：不调用 .with_config()；工具通过每次 ainvoke 的 config 参数传入
 ```
 
 ---
@@ -232,39 +238,57 @@ celery_app.conf.result_expires = 7200
 
 ### `worker/tasks.py`
 
+> **修正（Blocker #1）**：`graph.ainvoke()` 不会抛 `GraphInterrupt`，interrupt 信息在返回值的 `__interrupt__` 字段。
+> **修正（Blocker #2）**：`with_config()` 的 `configurable` 会被 `ainvoke` 的 `config` 参数完整覆盖，工具必须在每次调用时合并进 config。
+
 ```python
 from langgraph.types import Command
-from langgraph.errors import GraphInterrupt
-import asyncio, json, redis as _redis
+import asyncio, json, uuid, redis as _redis
 
 r = _redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 
+
+def _build_config(job_id: str) -> dict:
+    return {"configurable": {"thread_id": job_id, "tools": build_tools()}}
+
+
+def _handle_result(job_id: str, result: dict):
+    """检查返回值中的 __interrupt__，区分 HITL 暂停和正常完成。"""
+    interrupts = result.get("__interrupt__")
+    if interrupts:
+        interrupt_id = str(uuid.uuid4())
+        payload = {"type": "hitl_request", "interrupt_id": interrupt_id, "data": interrupts[0].value}
+        # 同时 publish + set key，支持断线重连拉取
+        r.set(f"job:{job_id}:last_hitl", json.dumps(payload, ensure_ascii=False), ex=7200)
+        _publish(job_id, payload)
+    else:
+        _publish(job_id, {"type": "done", "result": result})
+
+
 @celery_app.task(bind=True, max_retries=0)
 def run_plan(self, job_id: str, request_data: dict):
-    graph = build_graph()
-    config = {"configurable": {"thread_id": job_id}}
     initial_state = {**request_data, "errors": [], "warnings": [], "job_id": job_id}
+    with RedisSaver.from_conn_string(os.getenv("REDIS_URL")) as checkpointer:
+        checkpointer.setup()
+        graph = build_compiled_graph(checkpointer)          # 传入 checkpointer，不含 with_config
+        result = asyncio.run(graph.ainvoke(initial_state, config=_build_config(job_id)))
+    _handle_result(job_id, result)
 
-    try:
-        result = asyncio.run(graph.ainvoke(initial_state, config=config))
-        _publish(job_id, {"type": "done", "result": result})
-    except GraphInterrupt as exc:
-        _publish(job_id, {"type": "hitl_request", "data": exc.args[0]})
-        # task 正常结束；等待 resume_plan 被触发
 
 @celery_app.task(bind=True, max_retries=1)
-def resume_plan(self, job_id: str, user_text: str):
-    graph = build_graph()
-    config = {"configurable": {"thread_id": job_id}}
-
-    try:
+def resume_plan(self, job_id: str, user_text: str, interrupt_id: str):
+    # 幂等：同一 interrupt_id 只处理一次，防双提交
+    lock_key = f"job:{job_id}:resume:{interrupt_id}"
+    if not r.set(lock_key, "1", nx=True, ex=300):
+        return                                              # 已处理过，忽略重复提交
+    with RedisSaver.from_conn_string(os.getenv("REDIS_URL")) as checkpointer:
+        checkpointer.setup()
+        graph = build_compiled_graph(checkpointer)
         result = asyncio.run(
-            graph.ainvoke(Command(resume={"text": user_text}), config=config)
+            graph.ainvoke(Command(resume={"text": user_text}), config=_build_config(job_id))
         )
-        _publish(job_id, {"type": "done", "result": result})
-    except GraphInterrupt as exc:
-        # 下一个 interrupt（HITL #2）
-        _publish(job_id, {"type": "hitl_request", "data": exc.args[0]})
+    _handle_result(job_id, result)
+
 
 def _publish(job_id: str, payload: dict):
     r.publish(f"job:{job_id}", json.dumps(payload, ensure_ascii=False))
@@ -276,15 +300,24 @@ def _publish(job_id: str, payload: dict):
 ### `api/main.py` 改动
 
 ```python
-# 替换 asyncio.create_task(_run_plan(...))
-from worker.tasks import run_plan
+from worker.tasks import run_plan, resume_plan
 
 @app.post("/plans", status_code=202)
 async def create_plan(req: PlanRequest):
     job_id = str(uuid.uuid4())
     run_plan.delay(job_id, req.model_dump())
     return {"job_id": job_id, "status": "pending"}
+
+@app.get("/plans/{job_id}/state")
+async def get_plan_state(job_id: str):
+    """断线重连时前端调用，获取当前 HITL 状态或最终结果。"""
+    last_hitl = _redis.get(f"job:{job_id}:last_hitl")
+    if last_hitl:
+        return json.loads(last_hitl)
+    raise HTTPException(status_code=404, detail="No pending HITL state")
 ```
+
+前端重连逻辑：WebSocket 断线后重新连接时，先 `GET /plans/{job_id}/state` 拉取最后一条 HITL 消息，恢复到对应 step。
 
 ---
 
@@ -448,7 +481,8 @@ travel_agent/
 ```
 # requirements.txt 新增
 celery[redis]>=5.3.0
-langgraph-checkpoint-redis>=0.0.1
+langgraph-checkpoint-redis>=0.4.0
+redisvl>=0.3.0          # langgraph-checkpoint-redis 的必要依赖
 
 # frontend/package.json
 vue@^3.4.0
