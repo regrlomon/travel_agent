@@ -61,3 +61,21 @@ async def test_flight_client_delegates_to_run_async(mocker):
     result = await client.search_flights("上海", "成都", "2026-07-01")
     assert result["status"] == "success"
     mock_fn.assert_called_once()
+
+
+def test_build_tools_returns_all_keys():
+    from agent.tools_container import build_tools
+    tools = build_tools(overrides={
+        "amap": "mock_amap",
+        "tavily": "mock_tavily",
+        "xhs": "mock_xhs",
+        "flight": "mock_flight",
+    })
+    assert set(tools.keys()) == {"amap", "tavily", "xhs", "flight"}
+
+
+def test_build_tools_override_replaces_default():
+    from agent.tools_container import build_tools
+    mock = object()
+    tools = build_tools(overrides={"amap": mock})
+    assert tools["amap"] is mock
