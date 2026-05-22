@@ -1,23 +1,20 @@
-import json
-import os
+import json, os
 from datetime import date, timedelta
 import litellm
+from langchain_core.runnables import RunnableConfig
+from langgraph.types import interrupt
 from agent.state import TravelPlanState
-from tools.amap import get_district_codes
 
 
 async def _llm_parse_destination(destination: str, origin: str) -> dict:
-    """Ask LLM to expand destination into region info. Returns city names (not codes)."""
-    prompt = f"""You are a Chinese travel expert. Given the destination "{destination}" (departing from "{origin}"):
-Return JSON with these keys:
-- region: human-readable description (e.g. "甘孜州+阿坝州")
-- city_names: list of Chinese administrative district names (e.g. ["甘孜藏族自治州","阿坝藏族羌族自治州"])
-- destination_airports: IATA codes of airports serving this area (e.g. ["CTU","TFU","DCY","KGT"])
-- origin_airports: IATA codes for airports near "{origin}" (e.g. ["PVG","SHA","NKG"])
-- search_keywords: 3-5 Chinese search queries for travel content (e.g. ["川西 攻略","稻城亚丁 游记"])
-
+    prompt = f"""You are a Chinese travel expert. Given destination "{destination}" departing from "{origin}":
+Return JSON with:
+- region: human-readable string e.g. "甘孜州+阿坝州"
+- city_names: list of Chinese admin district names e.g. ["甘孜藏族自治州"]
+- destination_airports: IATA codes e.g. ["CTU","DCY"]
+- origin_airports: IATA codes near "{origin}" e.g. ["PVG","SHA","NKG"]
+- search_keywords: 3-5 Chinese queries e.g. ["川西 攻略"]
 Return only valid JSON, no markdown."""
-
     resp = await litellm.acompletion(
         model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
         messages=[{"role": "user", "content": prompt}],
@@ -26,28 +23,55 @@ Return only valid JSON, no markdown."""
     return json.loads(resp.choices[0].message.content)
 
 
-async def _resolve_amap_codes(city_names: list[str]) -> list[str]:
-    """Convert city names to 高德 adcodes via the district API."""
-    api_key = os.getenv("AMAP_API_KEY", "")
-    code_map = await get_district_codes(city_names, api_key=api_key)
-    return list(code_map.values())
+async def _apply_corrections(parsed: dict, user_text: str, config: RunnableConfig) -> dict:
+    """Single LLM call to apply user's natural-language corrections to parsed params."""
+    prompt = f"""Current parsed travel params:
+{json.dumps(parsed, ensure_ascii=False)}
+
+User correction: "{user_text}"
+
+Apply the correction and return the updated JSON with the same keys. Only change what the user asked.
+Return only valid JSON, no markdown."""
+    resp = await litellm.acompletion(
+        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+    )
+    return json.loads(resp.choices[0].message.content)
 
 
-async def run(state: TravelPlanState) -> dict:
+def _expand_dates(depart_date: str | None) -> list[date]:
+    if depart_date:
+        return [date.fromisoformat(depart_date)]
+    today = date.today()
+    return [today + timedelta(days=i) for i in range(14)]
+
+
+async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
+    tools = config["configurable"]["tools"]
     parsed = await _llm_parse_destination(state["destination"], state["origin"])
-    amap_cities = await _resolve_amap_codes(parsed["city_names"])
 
-    if state.get("depart_date"):
-        depart_dates = [date.fromisoformat(state["depart_date"])]
-    else:
-        today = date.today()
-        depart_dates = [today + timedelta(days=i) for i in range(14)]
+    code_map = await tools["amap"].get_district_codes(parsed["city_names"])
+    amap_cities = list(code_map.values())
+
+    user_reply = interrupt({
+        "type": "confirm_params",
+        "message": (
+            f"已解析：出发 {parsed['origin_airports']}，"
+            f"目的地 {parsed['destination_airports']}，共 {state['duration_days']} 天。"
+            "有需要修改吗？"
+        ),
+        "parsed": parsed,
+    })
+
+    if user_reply.get("text"):
+        parsed = await _apply_corrections(parsed, user_reply["text"], config)
 
     return {
         "destination_region": parsed["region"],
         "destination_amap_cities": amap_cities,
         "destination_airports": parsed["destination_airports"],
         "origin_airports": parsed["origin_airports"],
-        "depart_dates": depart_dates,
+        "depart_dates": _expand_dates(state.get("depart_date")),
         "search_keywords": parsed["search_keywords"],
     }
