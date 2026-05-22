@@ -1,67 +1,47 @@
-import pytest
-import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+import pytest, json
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 
-def test_post_plans_returns_job_id(mock_redis):
-    # Fresh import for each test
-    if "api.main" in sys.modules:
-        del sys.modules["api.main"]
-    from api.main import app
+@pytest.fixture
+def mock_redis_instance():
+    return MagicMock()
 
-    client = TestClient(app)
-    with patch("api.main.asyncio.create_task"):
-        resp = client.post("/plans", json={
-            "destination": "川西",
-            "origin": "苏州",
-            "duration_days": 7,
-            "travelers": 2,
-        })
+
+@pytest.fixture
+def client(mock_redis_instance):
+    with patch("api.main._redis", mock_redis_instance), \
+         patch("api.main.run_plan") as mock_task:
+        mock_task.delay = MagicMock()
+        from api.main import app
+        yield TestClient(app), mock_task
+
+
+def test_post_plans_queues_celery_task(client):
+    test_client, mock_task = client
+    resp = test_client.post("/plans", json={
+        "destination": "川西",
+        "origin": "苏州",
+        "duration_days": 7,
+    })
     assert resp.status_code == 202
     assert "job_id" in resp.json()
-    assert resp.json()["status"] == "pending"
+    mock_task.delay.assert_called_once()
 
 
-def test_get_plans_pending(mock_redis):
-    # Fresh import for each test
-    if "api.main" in sys.modules:
-        del sys.modules["api.main"]
-
-    # Set mock return value BEFORE import
-    mock_redis.get.return_value = b'{"status":"pending","progress":"parse_input: done"}'
-
-    from api.main import app
-    client = TestClient(app)
-    resp = client.get("/plans/test-job-id")
+def test_get_state_returns_last_stream_entry(client, mock_redis_instance):
+    test_client, _ = client
+    payload = {"type": "hitl_request", "interrupt_id": "iid-1", "data": {}}
+    mock_redis_instance.xrevrange.return_value = [
+        (b"1234-0", {b"data": json.dumps(payload).encode()})
+    ]
+    resp = test_client.get("/plans/test-job/state")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "pending"
+    assert resp.json()["type"] == "hitl_request"
 
 
-def test_get_plans_done(mock_redis):
-    # Fresh import for each test
-    if "api.main" in sys.modules:
-        del sys.modules["api.main"]
-
-    import json
-    result = {"status": "done", "result": {"itineraries": [], "flights_comparison": []}}
-    mock_redis.get.return_value = json.dumps(result).encode()
-
-    from api.main import app
-    client = TestClient(app)
-    resp = client.get("/plans/test-job-id")
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "done"
-
-
-def test_get_plans_not_found(mock_redis):
-    # Fresh import for each test
-    if "api.main" in sys.modules:
-        del sys.modules["api.main"]
-
-    mock_redis.get.return_value = None
-
-    from api.main import app
-    client = TestClient(app)
-    resp = client.get("/plans/nonexistent-id")
+def test_get_state_404_when_no_stream(client, mock_redis_instance):
+    test_client, _ = client
+    mock_redis_instance.xrevrange.return_value = []
+    resp = test_client.get("/plans/missing-job/state")
     assert resp.status_code == 404

@@ -1,18 +1,12 @@
-import asyncio
-import json
-import os
-import uuid
+import json, os, uuid
 from typing import Optional
-
 import redis
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-
-from agent.graph import build_graph
+from worker.tasks import run_plan, STREAM_KEY
 
 app = FastAPI(title="Smart Travel Agent API")
 _redis = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
-_graph = build_graph()
 
 
 class PlanRequest(BaseModel):
@@ -26,45 +20,24 @@ class PlanRequest(BaseModel):
     depart_date: Optional[str] = None
 
 
-async def _run_plan(job_id: str, req: PlanRequest):
-    _redis.set(f"job:{job_id}:status", json.dumps({"status": "running", "progress": "starting"}))
-    try:
-        state = {
-            **req.model_dump(),
-            "errors": [],
-            "warnings": [],
-            "job_id": job_id,
-        }
-        result = await _graph.ainvoke(state)
-        _redis.setex(
-            f"job:{job_id}:status",
-            7200,
-            json.dumps({"status": "done", "result": result}),
-        )
-    except Exception as e:
-        _redis.setex(
-            f"job:{job_id}:status",
-            7200,
-            json.dumps({"status": "error", "error": str(e)}),
-        )
-
-
 @app.post("/plans", status_code=202)
 async def create_plan(req: PlanRequest):
     job_id = str(uuid.uuid4())
-    _redis.set(f"job:{job_id}:status", json.dumps({"status": "pending", "progress": "queued"}))
-    asyncio.create_task(_run_plan(job_id, req))
+    run_plan.delay(job_id, req.model_dump())
     return {"job_id": job_id, "status": "pending"}
 
 
-@app.get("/plans/{job_id}")
-async def get_plan(job_id: str):
-    raw = _redis.get(f"job:{job_id}:status")
-    if raw is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    data = json.loads(raw)
-    # Read fine-grained progress from nodes
-    progress_raw = _redis.get(f"job:{job_id}:progress")
-    if progress_raw:
-        data["progress"] = progress_raw.decode()
-    return data
+@app.get("/plans/{job_id}/state")
+async def get_plan_state(job_id: str):
+    """Reconnect endpoint: return last message in job stream for state recovery."""
+    key = STREAM_KEY.format(job_id=job_id)
+    entries = _redis.xrevrange(key, count=1)
+    if entries:
+        _, fields = entries[0]
+        return json.loads(fields[b"data"])
+    raise HTTPException(status_code=404, detail="No stream data for this job")
+
+
+# Register WebSocket endpoint
+from api.websocket import ws_endpoint  # noqa: E402
+app.add_api_websocket_route("/ws/{job_id}", ws_endpoint)
