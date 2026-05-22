@@ -28,13 +28,13 @@
 </template>
 
 <script setup>
-import { useWebSocket } from './composables/useWebSocket.js'
+import { useSSE } from './composables/useWebSocket.js'
 import StepConfirm  from './components/StepConfirm.vue'
 import StepProgress from './components/StepProgress.vue'
 import StepReview   from './components/StepReview.vue'
 import StepResults  from './components/StepResults.vue'
 
-const { step, hitlData, progress, result, error, startPlan, sendReply } = useWebSocket()
+const { step, hitlData, progress, result, error, startPlan, sendReply } = useSSE()
 
 function onSubmit(formData) { startPlan(formData) }
 function onReply(text)      { sendReply(text) }
