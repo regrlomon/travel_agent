@@ -1,11 +1,29 @@
-import json, os, uuid
+import json, os, subprocess, sys, uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 import redis
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from worker.tasks import run_plan, STREAM_KEY
 
-app = FastAPI(title="Smart Travel Agent API")
+_worker_process: subprocess.Popen | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _worker_process
+    _worker_process = subprocess.Popen([
+        sys.executable, "-m", "celery",
+        "-A", "worker.celery_app", "worker",
+        "--loglevel=info", "--concurrency=2",
+    ])
+    yield
+    if _worker_process:
+        _worker_process.terminate()
+        _worker_process.wait()
+
+
+app = FastAPI(title="Smart Travel Agent API", lifespan=lifespan)
 _redis = redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 
 
