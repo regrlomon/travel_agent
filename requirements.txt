@@ -4,11 +4,19 @@ litellm>=1.40.0
 fastapi>=0.111.0
 uvicorn>=0.30.0
 redis>=5.0.0
-playwright>=1.44.0
 tavily-python>=0.3.0
 httpx>=0.27.0
 python-dotenv>=1.0.0
 pydantic>=2.0.0
+PyExecJS
+requests
+loguru
+retry
+openpyxl
+aiohttp
+opencv-python
+numpy
+qrcode
 
 pytest>=8.0.0
 pytest-asyncio>=0.23.0

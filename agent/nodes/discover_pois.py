@@ -1,4 +1,5 @@
 # agent/nodes/discover_pois.py
+import asyncio
 import json
 import math
 import os
@@ -9,7 +10,7 @@ from agent.state import TravelPlanState
 from models import POI, POISource
 from tools.amap import search_pois, get_driving_time
 from tools.tavily import search_travel_articles
-from tools.xhs_scraper import scrape_xhs_notes
+from tools.xhs_tool import search_xhs, DEFAULT_COUNT
 
 EARTH_RADIUS_KM = 6371.0
 MAX_POIS = 40
@@ -56,10 +57,12 @@ async def _fetch_amap_pois(city_codes: list[str], keywords: str = "景点") -> l
 async def _fetch_article_pois(keywords: list[str]) -> list[dict]:
     """Fetch raw article text from XHS and Tavily, return as list of {platform, content}."""
     results = []
-    xhs = await scrape_xhs_notes(keywords)
-    results.extend([{"platform": "xiaohongshu", "content": n["content"]} for n in xhs])
+    cookie = os.getenv("XHS_COOKIE", "")
+    for keyword in keywords:
+        notes = await asyncio.to_thread(search_xhs, keyword, DEFAULT_COUNT, True, cookie)
+        results.extend({"platform": "xiaohongshu", "content": n["content"]} for n in notes)
     tavily = await search_travel_articles(keywords, api_key=os.getenv("TAVILY_API_KEY", ""))
-    results.extend([{"platform": "mafengwo", "content": a["content"]} for a in tavily])
+    results.extend({"platform": "mafengwo", "content": a["content"]} for a in tavily)
     return results
 
 
