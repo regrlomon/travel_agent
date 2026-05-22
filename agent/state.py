@@ -33,6 +33,10 @@ class TravelPlanState(TypedDict, total=False):
     # ── Written by ④ plan_itinerary ─────────────────────────────────────
     itineraries: list[ItineraryOption]
 
+    # ── Written by human_review (HITL #2) ────────────────────────────────
+    user_flight_choice: str | None   # pair_id or natural-language description from user
+    user_poi_prefs: str | None       # natural-language prefs injected into plan_itinerary prompt
+
     # ── Global ───────────────────────────────────────────────────────────
     errors: list[str]
     warnings: list[str]
