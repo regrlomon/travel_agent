@@ -5,8 +5,10 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     proxy: {
-      '/plans': 'http://localhost:8000',
-      '/ws': { target: 'ws://localhost:8000', ws: true },
+      '/plans': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
 })
