@@ -20,33 +20,31 @@
 
 ```
 Vue 3 前端（4 步向导）
-    ↕ WebSocket /ws/{job_id}（双向实时）
+    WebSocket /ws/{job_id}（双向实时）
 FastAPI
-    ↓ celery.send_task()          ↑ subscribe Redis Pub/Sub
-    ↓                             ↑
-Redis（broker + Checkpointer + Pub/Sub + cache）
-    ↓ dequeue
+    celery.send_task()        xread Redis Streams
+Redis（broker + Checkpointer + Streams + cache）
+    dequeue
 Celery Worker
-    ↓
-LangGraph Graph（含 Redis Checkpointer）
-    ├── ① parse_input → interrupt #1
-    ├── ② discover_pois ‖ ③ scrape_flights（并行）
-    ├── ④ human_review → interrupt #2
-    ├── ⑤ plan_itinerary
-    └── ⑥ compose_output
+    LangGraph Graph（含 Redis Checkpointer）
+        parse_input → interrupt #1
+        discover_pois || scrape_flights（并行）
+        human_review → interrupt #2
+        plan_itinerary
+        compose_output
 ```
 
 ### HITL 通路（两个 interrupt）
 
 ```
 interrupt() 触发
-  → Worker 捕获 GraphInterrupt
-  → publish Redis Pub/Sub: job:{job_id}
-  → FastAPI WS 订阅者收到
-  → 推送给前端（type: "hitl_request"）
-  → 前端展示对话界面，用户自然语言回复
-  → WS → FastAPI → resume_plan.delay(job_id, user_text)
-  → Worker: LLM 解析 user_text → Command(resume=...) → graph 继续
+  Worker 检测 result["__interrupt__"]
+  xadd Redis Stream: job:{job_id}:stream
+  FastAPI WS 循环 xread 收到消息
+  推送给前端（type: "hitl_request", interrupt_id: "uuid"）
+  前端展示对话界面，用户自然语言回复
+  WS → FastAPI → resume_plan.delay(job_id, user_text, interrupt_id)
+  Worker: LLM 解析 user_text → Command(resume=...) → graph 继续
 ```
 
 ---
@@ -57,13 +55,12 @@ interrupt() 触发
 
 ```
 parse_input
-  ↓ interrupt #1（确认参数）
-discover_pois ‖ scrape_flights
-  ↓ 汇合
-human_review          ← 新增节点
-  ↓ interrupt #2（选航班 + 说偏好）
+  interrupt #1（确认参数）
+discover_pois || scrape_flights
+  汇合
+human_review          <- 新增节点
+  interrupt #2（选航班 + 说偏好）
 plan_itinerary
-  ↓
 compose_output
 ```
 
@@ -163,7 +160,7 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
         "type": "review_flights_pois",
         "flights_summary": flights_summary,
         "poi_summary": poi_summary,
-        "message": "已找到以上航班和景点，有偏好吗？（或直接说"确认，帮我安排"）",
+        "message": "已找到以上航班和景点，有偏好吗？（或直接说确认，帮我安排）",
     })
 
     choice = await _parse_review_reply(
@@ -243,13 +240,27 @@ celery_app.conf.result_expires = 7200
 
 ```python
 from langgraph.types import Command
-import asyncio, json, uuid, redis as _redis
+from langgraph.checkpoint.redis import RedisSaver
+import asyncio, json, os, uuid
+import redis as _redis
+
+from agent.graph import build_compiled_graph
+from agent.tools_container import build_tools
+from worker.celery_app import celery_app
 
 r = _redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+STREAM_KEY = "job:{job_id}:stream"
 
 
 def _build_config(job_id: str) -> dict:
     return {"configurable": {"thread_id": job_id, "tools": build_tools()}}
+
+
+def _emit(job_id: str, payload: dict):
+    """xadd 写入 Stream，TTL 2h。消息自带持久化，断线重连可回放。"""
+    key = STREAM_KEY.format(job_id=job_id)
+    r.xadd(key, {"data": json.dumps(payload, ensure_ascii=False)})
+    r.expire(key, 7200)
 
 
 def _handle_result(job_id: str, result: dict):
@@ -257,12 +268,13 @@ def _handle_result(job_id: str, result: dict):
     interrupts = result.get("__interrupt__")
     if interrupts:
         interrupt_id = str(uuid.uuid4())
-        payload = {"type": "hitl_request", "interrupt_id": interrupt_id, "data": interrupts[0].value}
-        # 同时 publish + set key，支持断线重连拉取
-        r.set(f"job:{job_id}:last_hitl", json.dumps(payload, ensure_ascii=False), ex=7200)
-        _publish(job_id, payload)
+        _emit(job_id, {
+            "type": "hitl_request",
+            "interrupt_id": interrupt_id,
+            "data": interrupts[0].value,
+        })
     else:
-        _publish(job_id, {"type": "done", "result": result})
+        _emit(job_id, {"type": "done", "result": result})
 
 
 @celery_app.task(bind=True, max_retries=0)
@@ -270,7 +282,7 @@ def run_plan(self, job_id: str, request_data: dict):
     initial_state = {**request_data, "errors": [], "warnings": [], "job_id": job_id}
     with RedisSaver.from_conn_string(os.getenv("REDIS_URL")) as checkpointer:
         checkpointer.setup()
-        graph = build_compiled_graph(checkpointer)          # 传入 checkpointer，不含 with_config
+        graph = build_compiled_graph(checkpointer)
         result = asyncio.run(graph.ainvoke(initial_state, config=_build_config(job_id)))
     _handle_result(job_id, result)
 
@@ -280,7 +292,7 @@ def resume_plan(self, job_id: str, user_text: str, interrupt_id: str):
     # 幂等：同一 interrupt_id 只处理一次，防双提交
     lock_key = f"job:{job_id}:resume:{interrupt_id}"
     if not r.set(lock_key, "1", nx=True, ex=300):
-        return                                              # 已处理过，忽略重复提交
+        return
     with RedisSaver.from_conn_string(os.getenv("REDIS_URL")) as checkpointer:
         checkpointer.setup()
         graph = build_compiled_graph(checkpointer)
@@ -289,18 +301,15 @@ def resume_plan(self, job_id: str, user_text: str, interrupt_id: str):
         )
     _handle_result(job_id, result)
 
-
-def _publish(job_id: str, payload: dict):
-    r.publish(f"job:{job_id}", json.dumps(payload, ensure_ascii=False))
-
-# 节点内进度上报统一改为 publish（替换原有的 r.set key 写法）：
-# r.publish(f"job:{job_id}", json.dumps({"type": "progress", "node": "discover_pois", "message": "...", "pct": 40}))
+# 节点内进度上报：
+# from worker.tasks import _emit, r
+# _emit(job_id, {"type": "progress", "node": "discover_pois", "message": "...", "pct": 40})
 ```
 
 ### `api/main.py` 改动
 
 ```python
-from worker.tasks import run_plan, resume_plan
+from worker.tasks import run_plan, STREAM_KEY
 
 @app.post("/plans", status_code=202)
 async def create_plan(req: PlanRequest):
@@ -310,39 +319,66 @@ async def create_plan(req: PlanRequest):
 
 @app.get("/plans/{job_id}/state")
 async def get_plan_state(job_id: str):
-    """断线重连时前端调用，获取当前 HITL 状态或最终结果。"""
-    last_hitl = _redis.get(f"job:{job_id}:last_hitl")
-    if last_hitl:
-        return json.loads(last_hitl)
-    raise HTTPException(status_code=404, detail="No pending HITL state")
+    """断线重连时前端调用，读取 Stream 中最后一条消息，恢复到对应 step。"""
+    key = STREAM_KEY.format(job_id=job_id)
+    entries = _redis.xrevrange(key, count=1)
+    if entries:
+        _, fields = entries[0]
+        return json.loads(fields[b"data"])
+    raise HTTPException(status_code=404, detail="No stream data for this job")
 ```
 
-前端重连逻辑：WebSocket 断线后重新连接时，先 `GET /plans/{job_id}/state` 拉取最后一条 HITL 消息，恢复到对应 step。
+前端重连逻辑：WebSocket 断线后重连时，先 `GET /plans/{job_id}/state` 拉最后一条消息，恢复到对应 step。
 
 ---
 
-## 7. WebSocket + Redis Pub/Sub 桥接
+## 7. WebSocket + Redis Streams 桥接
 
 ### `api/websocket.py`（新增）
 
+用 `xread` 代替 Pub/Sub。Streams 天然持久化，消费者断线重连后从上次 offset 继续，不丢消息，也无需额外 `r.set` 备份。
+
 ```python
-@app.websocket("/ws/{job_id}")
+import asyncio, json, os
+import redis.asyncio as aioredis
+from fastapi import WebSocket, WebSocketDisconnect
+from worker.tasks import resume_plan, STREAM_KEY
+
+async_r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+
+
 async def ws_endpoint(websocket: WebSocket, job_id: str):
     await websocket.accept()
-    pubsub = async_redis.pubsub()
-    await pubsub.subscribe(f"job:{job_id}")
+    stream_key = STREAM_KEY.format(job_id=job_id)
+    last_id = "0"                                   # 从头读取，确保重连不丢消息
 
-    async def forward():                          # Redis → 前端
-        async for msg in pubsub.listen():
-            if msg["type"] == "message":
-                await websocket.send_text(msg["data"].decode())
+    async def forward():
+        """从 Stream 读取 Worker 消息并推送给前端。"""
+        nonlocal last_id
+        try:
+            while True:
+                entries = await async_r.xread({stream_key: last_id}, block=5000, count=10)
+                for _, messages in (entries or []):
+                    for msg_id, fields in messages:
+                        last_id = msg_id
+                        await websocket.send_text(fields[b"data"].decode())
+        except WebSocketDisconnect:
+            pass
 
-    async def receive():                          # 前端 → Celery
-        while True:
-            data = await websocket.receive_text()
-            payload = json.loads(data)
-            if payload.get("type") == "hitl_response":
-                resume_plan.delay(job_id, payload["text"])
+    async def receive():
+        """接收前端 hitl_response，触发 Celery resume_plan。"""
+        try:
+            while True:
+                data = await websocket.receive_text()
+                payload = json.loads(data)
+                if payload.get("type") == "hitl_response":
+                    resume_plan.delay(
+                        job_id,
+                        payload["text"],
+                        payload["interrupt_id"],      # 带回 interrupt_id 做幂等
+                    )
+        except WebSocketDisconnect:
+            pass
 
     await asyncio.gather(forward(), receive())
 ```
@@ -351,10 +387,10 @@ async def ws_endpoint(websocket: WebSocket, job_id: str):
 
 | 方向 | `type` | 内容 |
 |------|--------|------|
-| Server → Client | `hitl_request` | `{data: {type, message, parsed / flights_summary / poi_summary}}` |
+| Server → Client | `hitl_request` | `{interrupt_id, data: {type, message, parsed / flights_summary / poi_summary}}` |
 | Server → Client | `progress` | `{node, message, pct}` |
 | Server → Client | `done` | `{result: {...}}` |
-| Client → Server | `hitl_response` | `{text: "用户自然语言回复"}` |
+| Client → Server | `hitl_response` | `{text: "用户自然语言回复", interrupt_id: "同 hitl_request 里的值"}` |
 
 ---
 
@@ -364,7 +400,7 @@ async def ws_endpoint(websocket: WebSocket, job_id: str):
 class TravelPlanState(TypedDict, total=False):
     # ... 原有字段不变 ...
 
-    # 由 ④ human_review 写入
+    # 由 human_review 写入
     user_flight_choice: str | None   # 用户选择的航班（pair_id 或自然语言描述）
     user_poi_prefs: str | None       # 用户景点偏好（自然语言，传给 plan_itinerary prompt）
 ```
@@ -395,40 +431,49 @@ frontend/
 
 ```
 用户提交请求
-  → WS 连接 /ws/{job_id}
-  → 显示 Step 1（StepConfirm）
-  → 收到 hitl_request(confirm_params) → 已在 Step 1，展示解析结果供确认
-  → 用户确认 → 发送 hitl_response → 显示 Step 2（StepProgress）
-  → 收到 progress 消息 → 更新 Step 2 时间线
-  → 收到 hitl_request(review_flights_pois) → 切换到 Step 3（StepReview）
-  → 用户选择 → 发送 hitl_response → 显示 Step 2（继续进度）
-  → 收到 done → 切换到 Step 4（StepResults）
+  WS 连接 /ws/{job_id}（last_id="0" 从头读，断线重连自动回放）
+  显示 Step 1（StepConfirm）
+  收到 hitl_request(confirm_params) → 展示解析结果供确认
+  用户确认 → 发送 hitl_response（含 interrupt_id） → 显示 Step 2（StepProgress）
+  收到 progress 消息 → 更新 Step 2 时间线
+  收到 hitl_request(review_flights_pois) → 切换到 Step 3（StepReview）
+  用户选择 → 发送 hitl_response（含 interrupt_id） → 显示 Step 2（继续进度）
+  收到 done → 切换到 Step 4（StepResults）
 ```
 
 ### `useWebSocket.js` 核心逻辑
 
 ```javascript
 const step = ref(1)
-const hitlData = ref(null)
+const hitlData = ref(null)       // 包含 interrupt_id，发回时带上
 const progress = ref([])
 const result = ref(null)
+let ws = null
 
-ws.onmessage = (e) => {
-  const msg = JSON.parse(e.data)
-  if (msg.type === 'hitl_request') {
-    hitlData.value = msg.data
-    step.value = msg.data.type === 'confirm_params' ? 1 : 3
-  } else if (msg.type === 'progress') {
-    progress.value.push(msg)
-    step.value = 2
-  } else if (msg.type === 'done') {
-    result.value = msg.result
-    step.value = 4
+function connect(jobId) {
+  ws = new WebSocket(`ws://localhost:8000/ws/${jobId}`)
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data)
+    if (msg.type === 'hitl_request') {
+      hitlData.value = msg          // 整条消息存储，含 interrupt_id
+      step.value = msg.data.type === 'confirm_params' ? 1 : 3
+    } else if (msg.type === 'progress') {
+      progress.value.push(msg)
+      if (step.value !== 3) step.value = 2
+    } else if (msg.type === 'done') {
+      result.value = msg.result
+      step.value = 4
+    }
   }
+  ws.onclose = () => setTimeout(() => connect(jobId), 2000)  // 自动重连
 }
 
 const sendReply = (text) => {
-  ws.send(JSON.stringify({ type: 'hitl_response', text }))
+  ws.send(JSON.stringify({
+    type: 'hitl_response',
+    text,
+    interrupt_id: hitlData.value.interrupt_id,   // 带回 interrupt_id
+  }))
   step.value = 2
 }
 ```
@@ -453,10 +498,10 @@ travel_agent/
 ├── worker/
 │   ├── __init__.py
 │   ├── celery_app.py             # 新：Celery 配置
-│   └── tasks.py                  # 新：run_plan, resume_plan
+│   └── tasks.py                  # 新：run_plan, resume_plan, _emit
 ├── api/
-│   ├── main.py                   # 改：send_task 替换 create_task
-│   ├── websocket.py              # 新：WS endpoint + pub/sub 桥接
+│   ├── main.py                   # 改：send_task 替换 create_task，加 /state 接口
+│   ├── websocket.py              # 新：WS endpoint + Redis Streams 桥接
 │   └── __init__.py
 ├── frontend/                     # 新：Vue 3 应用
 │   ├── src/
