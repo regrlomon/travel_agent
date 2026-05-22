@@ -17,7 +17,7 @@ from typing import Literal
 
 from playwright.async_api import async_playwright
 
-from scraper import fetch_ctrip, fetch_ly, CITY_CODES
+from .scraper import fetch_ctrip, fetch_ly, CITY_CODES
 
 # ─────────────────────────────────────────────
 # Tool Schema（适用于 OpenAI / Anthropic 格式）
@@ -63,7 +63,7 @@ TOOL_DEFINITION = {
 Flight = dict  # {flight, dep, dep_ap, arr, arr_ap, price}
 
 
-async def _run_async(
+async def run_async(
     departure: str,
     arrival: str,
     date: str,
@@ -149,7 +149,7 @@ def run(
           - results:  各平台原始结果
           - summary:  统计摘要（总数、最低价、最便宜航班等）
     """
-    return asyncio.run(_run_async(departure, arrival, date, platforms or ["ctrip", "ly"]))
+    return asyncio.run(run_async(departure, arrival, date, platforms or ["ctrip", "ly"]))
 
 
 # ─────────────────────────────────────────────
@@ -173,3 +173,18 @@ if __name__ == "__main__":
                   f"{f['arr']} {f.get('arr_ap',''):<8}  ¥{f['price']:>5}  [{f['source']}]")
     else:
         print(f"错误: {result['message']}")
+
+
+class FlightClient:
+    @property
+    def city_codes(self) -> dict[str, str]:
+        return CITY_CODES
+
+    async def search_flights(
+        self,
+        origin_city: str,
+        dest_city: str,
+        date_str: str,
+        platforms: list[str] | None = None,
+    ) -> dict:
+        return await run_async(origin_city, dest_city, date_str, platforms or ["ctrip", "ly"])

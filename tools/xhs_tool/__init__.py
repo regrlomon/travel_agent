@@ -1,3 +1,4 @@
+import asyncio
 from ._core import search_xhs, DEFAULT_COUNT, DEFAULT_CONTENT
 
 # Anthropic tool use 格式定义
@@ -47,4 +48,17 @@ def handle_tool_call(tool_input: dict) -> list[dict]:
     )
 
 
-__all__ = ["TOOL_DEFINITION", "handle_tool_call", "search_xhs"]
+__all__ = ["TOOL_DEFINITION", "handle_tool_call", "search_xhs", "XhsClient"]
+
+
+class XhsClient:
+    async def scrape_notes(self, keywords: list[str], max_notes_per_keyword: int = DEFAULT_COUNT) -> list[dict]:
+        """Search XHS notes for multiple keywords and return combined results."""
+        loop = asyncio.get_event_loop()
+        results: list[dict] = []
+        for kw in keywords:
+            notes = await loop.run_in_executor(
+                None, lambda k=kw: search_xhs(k, count=max_notes_per_keyword)
+            )
+            results.extend(notes)
+        return results

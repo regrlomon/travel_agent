@@ -14,3 +14,11 @@ async def search_travel_articles(keywords: list[str], api_key: str) -> list[dict
             )
             results.extend(resp.get("results", []))
     return results
+
+
+class TavilyClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    async def search_travel_articles(self, keywords: list[str]) -> list[dict]:
+        return await search_travel_articles(keywords, api_key=self.api_key)

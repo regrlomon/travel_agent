@@ -89,3 +89,20 @@ async def check_transit_reachable(
             if transits:
                 return int(transits[0]["duration"]) // 60 <= max_minutes
     return False
+
+
+class AmapClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    async def get_district_codes(self, city_names: list[str]) -> dict[str, str]:
+        return await get_district_codes(city_names, api_key=self.api_key)
+
+    async def search_pois(self, city_codes: list[str], keywords: str = "景点") -> list[dict]:
+        return await search_pois(city_codes, keywords, api_key=self.api_key)
+
+    async def get_driving_time(self, origin: tuple, dest: tuple) -> "int | None":
+        return await get_driving_time(origin, dest, api_key=self.api_key)
+
+    async def check_transit_reachable(self, origin: tuple, dest: tuple, city_code: str, max_minutes: int = 120) -> bool:
+        return await check_transit_reachable(origin, dest, city_code, api_key=self.api_key, max_minutes=max_minutes)
