@@ -27,7 +27,7 @@ def _group_flights_comparison(pairs: list[FlightPair]) -> list[dict]:
     return list(groups.values())
 
 
-def run(state: TravelPlanState) -> dict:
+def run(state: TravelPlanState, config=None) -> dict:
     pois = state.get("pois", [])
     flight_pairs = state.get("flight_pairs", [])
     itineraries = state.get("itineraries", [])

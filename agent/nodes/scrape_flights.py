@@ -1,46 +1,26 @@
 import asyncio
 import uuid
-from datetime import date
+from datetime import date, datetime, timedelta
+
+from langchain_core.runnables import RunnableConfig
+
 from agent.state import TravelPlanState
 from models import Flight, FlightPair
-from tools.flight_scraper import scrape_price_calendar, scrape_flight_details
-
-PLATFORMS = ["ctrip", "qunar"]
 
 
-async def _scrape_calendars(
-    origin_airports: list[str],
-    dest_airports: list[str],
-    date_range: list[date],
-    top_n: int = 3,
-) -> list[date]:
-    """Fetch price calendars for all origin×dest pairs, return top_n cheapest dates."""
-    prices: dict[date, int] = {}
-    for origin in origin_airports:
-        for dest in dest_airports:
-            for platform in PLATFORMS:
-                cal = await scrape_price_calendar(origin, dest, platform)
-                for d, p in cal.items():
-                    if d in date_range:
-                        prices[d] = min(prices.get(d, p), p)
-    sorted_dates = sorted(prices.keys(), key=lambda d: prices[d])
-    return sorted_dates[:top_n]
-
-
-async def _scrape_details(
-    origin_airports: list[str],
-    dest_airports: list[str],
-    selected_dates: list[date],
-) -> list[Flight]:
-    """Scrape outbound and return flights for selected dates."""
-    flights: list[Flight] = []
-    for depart_date in selected_dates:
-        for origin in origin_airports:
-            for dest in dest_airports:
-                for platform in PLATFORMS:
-                    details = await scrape_flight_details(origin, dest, depart_date, platform)
-                    flights.extend(details)
-    return flights
+def _raw_to_flight(raw: dict, depart_date: date) -> Flight:
+    dep_dt = datetime.combine(
+        depart_date,
+        datetime.strptime(raw["dep"], "%H:%M").time(),
+    )
+    return Flight(
+        platform=raw.get("source", "unknown"),
+        depart_airport=raw.get("dep_ap", ""),
+        arrive_airport=raw.get("arr_ap", ""),
+        price=raw["price"],
+        flight_no=raw["flight"],
+        depart_time=dep_dt,
+    )
 
 
 def _assemble_flight_pairs(
@@ -48,16 +28,12 @@ def _assemble_flight_pairs(
     return_flights: list[Flight],
     dest_airports: set[str],
 ) -> list[FlightPair]:
-    """Build valid FlightPairs: both outbound.arrive and return.depart must be in dest_airports.
-    Keep cheapest per (outbound_airport, return_airport) combination."""
+    """Build FlightPairs from outbound and return lists; only accept valid airport combos."""
     best: dict[tuple, FlightPair] = {}
     for out in outbound_flights:
         if out.arrive_airport not in dest_airports:
             continue
         for ret in return_flights:
-            if ret.depart_airport not in dest_airports:
-                continue
-            # Return must depart from the same airport as outbound arrives at
             if ret.depart_airport != out.arrive_airport:
                 continue
             key = (out.depart_airport, out.arrive_airport)
@@ -73,32 +49,88 @@ def _assemble_flight_pairs(
     return list(best.values())
 
 
-async def run(state: TravelPlanState) -> dict:
-    origin_airports = state["origin_airports"]
-    dest_airports = state["destination_airports"]
-    depart_dates = state["depart_dates"]
-    dest_set = set(dest_airports)
-    warnings = list(state.get("warnings", []))
+async def _scrape_calendars(
+    origin_city: str,
+    dest_city: str,
+    candidate_dates: list[date],
+    flight_client,
+) -> list[date]:
+    """Query multiple dates concurrently and return dates that have flights, sorted by price."""
+    results = await asyncio.gather(
+        *[flight_client.search_flights(origin_city, dest_city, d.isoformat()) for d in candidate_dates],
+        return_exceptions=True,
+    )
+    priced: list[tuple[int, date]] = []
+    for d, result in zip(candidate_dates, results):
+        if isinstance(result, Exception) or result.get("status") != "success":
+            continue
+        flights = result.get("merged", [])
+        if flights:
+            min_price = min(f["price"] for f in flights)
+            priced.append((min_price, d))
+    priced.sort()
+    return [d for _, d in priced]
 
-    # Step 1: date selection
-    if len(depart_dates) == 1:
-        selected_dates = depart_dates
-        outbound_dates = depart_dates
+
+async def _scrape_details(
+    origin_city: str,
+    dest_city: str,
+    chosen_date: date,
+    flight_client,
+) -> list[Flight]:
+    """Fetch full flight list for a single date."""
+    result = await flight_client.search_flights(origin_city, dest_city, chosen_date.isoformat())
+    if result.get("status") != "success":
+        return []
+    return [_raw_to_flight(f, chosen_date) for f in result.get("merged", [])]
+
+
+async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
+    origin_airports: list[str] = state["origin_airports"]
+    dest_airports: list[str] = state["destination_airports"]
+    depart_dates: list[date] = state["depart_dates"]
+    warnings: list[str] = list(state.get("warnings", []))
+
+    # Resolve tool client — fall back to direct import if no config
+    if config is not None:
+        flight_client = config["configurable"]["tools"]["flight"]
+        city_codes = flight_client.city_codes
     else:
-        selected_dates = await _scrape_calendars(origin_airports, dest_airports, depart_dates)
-        if not selected_dates:
-            selected_dates = depart_dates[:3]
-            warnings.append("价格日历爬取失败，使用前3个备选日期")
-        outbound_dates = selected_dates
+        from tools.flight_tool.scraper import CITY_CODES as city_codes
+        from tools.flight_tool.tool import FlightClient
+        flight_client = FlightClient()
 
-    # Step 2: detail scraping
-    from datetime import timedelta
-    return_dates = [d + timedelta(days=state["duration_days"]) for d in outbound_dates]
-    outbound_flights = await _scrape_details(origin_airports, dest_airports, outbound_dates)
-    return_flights = await _scrape_details(dest_airports, origin_airports, return_dates)
+    airport_to_city: dict[str, str] = {v: k for k, v in city_codes.items()}
 
-    # Step 3: assemble pairs
-    flight_pairs = _assemble_flight_pairs(outbound_flights, return_flights, dest_set)
+    origin_cities = [c for c in (airport_to_city.get(a) for a in origin_airports) if c]
+    dest_cities = [c for c in (airport_to_city.get(a) for a in dest_airports) if c]
+
+    if not origin_cities:
+        warnings.append(f"出发机场 {origin_airports} 不在支持列表，跳过机票查询")
+        return {"flight_pairs": [], "selected_dates": depart_dates[:1], "warnings": warnings}
+    if not dest_cities:
+        warnings.append(f"目的地机场 {dest_airports} 不在支持列表，跳过机票查询")
+        return {"flight_pairs": [], "selected_dates": depart_dates[:1], "warnings": warnings}
+
+    origin_city = origin_cities[0]
+    dest_city = dest_cities[0]
+
+    # When multiple candidate dates: use calendar scrape to pick cheapest date
+    candidate_dates = depart_dates[:3]
+    if len(candidate_dates) > 1:
+        sorted_dates = await _scrape_calendars(origin_city, dest_city, candidate_dates, flight_client)
+        best_date = sorted_dates[0] if sorted_dates else candidate_dates[0]
+    else:
+        best_date = candidate_dates[0]
+
+    selected_dates = [best_date]
+
+    outbound_flights = await _scrape_details(origin_city, dest_city, best_date, flight_client)
+    return_date = best_date + timedelta(days=state["duration_days"])
+    return_flights = await _scrape_details(dest_city, origin_city, return_date, flight_client)
+
+    dest_airport_set = set(dest_airports)
+    flight_pairs = _assemble_flight_pairs(outbound_flights, return_flights, dest_airport_set)
 
     if not flight_pairs:
         warnings.append("机票数据获取失败，请自行查询各平台")

@@ -1,6 +1,7 @@
 import json
 import os
 import litellm
+from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
 from models import POI, FlightPair, DayPlan, ItineraryOption
 
@@ -24,14 +25,22 @@ def _build_flight_table(pairs: list[FlightPair]) -> str:
     return "\n".join(lines)
 
 
-async def _phase1_select(pois: list[POI], pairs: list[FlightPair], interests: list[str], duration_days: int) -> list[dict]:
+async def _phase1_select(pois: list[POI], pairs: list[FlightPair], interests: list[str], duration_days: int,
+                          user_flight_choice=None, user_poi_prefs=None) -> list[dict]:
     """Phase 1: compressed tables → LLM selects POIs per plan per day."""
     poi_table = _build_poi_table(pois)
     flight_table = _build_flight_table(pairs)
+
+    user_context = ""
+    if user_flight_choice:
+        user_context += f"\nUser preferred flight: {user_flight_choice}"
+    if user_poi_prefs:
+        user_context += f"\nUser POI preferences: {user_poi_prefs}"
+
     prompt = f"""You are a travel planner. Given the POI list and flight options below, create 2-3 travel plans.
 
 Interests: {', '.join(interests)}
-Trip duration: {duration_days} days
+Trip duration: {duration_days} days{user_context}
 
 POIs:
 {poi_table}
@@ -133,17 +142,21 @@ Return only valid JSON, no markdown."""
     )
 
 
-async def run(state: TravelPlanState) -> dict:
+async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     pois = state["pois"]
     pairs = state["flight_pairs"]
     matrix = state.get("travel_time_matrix", {})
     interests = state.get("interests", [])
     duration_days = state["duration_days"]
+    user_flight_choice = state.get("user_flight_choice")
+    user_poi_prefs = state.get("user_poi_prefs")
 
     poi_map = {p.poi_id: p for p in pois}
     pair_map = {fp.pair_id: fp for fp in pairs}
 
-    plan_skeletons = await _phase1_select(pois, pairs, interests, duration_days)
+    plan_skeletons = await _phase1_select(
+        pois, pairs, interests, duration_days, user_flight_choice, user_poi_prefs
+    )
 
     itineraries = []
     for skeleton in plan_skeletons:

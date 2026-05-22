@@ -6,11 +6,9 @@ import os
 import uuid
 from typing import Optional
 import litellm
+from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
 from models import POI, POISource
-from tools.amap import search_pois, get_driving_time
-from tools.tavily import search_travel_articles
-from tools.xhs_tool import search_xhs, DEFAULT_COUNT
 
 EARTH_RADIUS_KM = 6371.0
 MAX_POIS = 40
@@ -50,19 +48,30 @@ def _compute_confidence(mention_count: int, platform_count: int, amap_only: bool
     return "low"
 
 
-async def _fetch_amap_pois(city_codes: list[str], keywords: str = "景点") -> list[dict]:
+async def _fetch_amap_pois(city_codes: list[str], keywords: str = "景点", tools: dict | None = None) -> list[dict]:
+    if tools is not None:
+        return await tools["amap"].search_pois(city_codes, keywords)
+    from tools.amap import search_pois
     return await search_pois(city_codes, keywords, api_key=os.getenv("AMAP_API_KEY", ""))
 
 
-async def _fetch_article_pois(keywords: list[str]) -> list[dict]:
+async def _fetch_article_pois(keywords: list[str], tools: dict | None = None) -> list[dict]:
     """Fetch raw article text from XHS and Tavily, return as list of {platform, content}."""
     results = []
-    cookie = os.getenv("XHS_COOKIE", "")
-    for keyword in keywords:
-        notes = await asyncio.to_thread(search_xhs, keyword, DEFAULT_COUNT, True, cookie)
-        results.extend({"platform": "xiaohongshu", "content": n["content"]} for n in notes)
-    tavily = await search_travel_articles(keywords, api_key=os.getenv("TAVILY_API_KEY", ""))
-    results.extend({"platform": "mafengwo", "content": a["content"]} for a in tavily)
+    if tools is not None:
+        xhs_notes = await tools["xhs"].scrape_notes(keywords)
+        results.extend({"platform": "xiaohongshu", "content": n["content"]} for n in xhs_notes)
+        tavily = await tools["tavily"].search_travel_articles(keywords)
+        results.extend({"platform": "mafengwo", "content": a["content"]} for a in tavily)
+    else:
+        from tools.xhs_tool import search_xhs, DEFAULT_COUNT
+        from tools.tavily import search_travel_articles
+        cookie = os.getenv("XHS_COOKIE", "")
+        for keyword in keywords:
+            notes = await asyncio.to_thread(search_xhs, keyword, DEFAULT_COUNT, True, cookie)
+            results.extend({"platform": "xiaohongshu", "content": n["content"]} for n in notes)
+        tavily = await search_travel_articles(keywords, api_key=os.getenv("TAVILY_API_KEY", ""))
+        results.extend({"platform": "mafengwo", "content": a["content"]} for a in tavily)
     return results
 
 
@@ -93,31 +102,35 @@ Return only a JSON array, no markdown."""
     return {str(item["index"]): item for item in scored}
 
 
-async def _build_travel_time_matrix(pois: list[POI]) -> dict[tuple[str, str], int]:
+async def _build_travel_time_matrix(pois: list[POI], tools: dict | None = None) -> dict[tuple[str, str], int]:
     """Compute driving times only for POI pairs within MAX_MATRIX_DISTANCE_KM."""
     matrix: dict[tuple[str, str], int] = {}
-    api_key = os.getenv("AMAP_API_KEY", "")
     for i, a in enumerate(pois):
         for j, b in enumerate(pois):
             if i >= j:
                 continue
             if _haversine_km(a.coords, b.coords) <= MAX_MATRIX_DISTANCE_KM:
-                minutes = await get_driving_time(a.coords, b.coords, api_key=api_key)
+                if tools is not None:
+                    minutes = await tools["amap"].get_driving_time(a.coords, b.coords)
+                else:
+                    from tools.amap import get_driving_time
+                    minutes = await get_driving_time(a.coords, b.coords, api_key=os.getenv("AMAP_API_KEY", ""))
                 if minutes is not None:
                     matrix[(a.poi_id, b.poi_id)] = minutes
                     matrix[(b.poi_id, a.poi_id)] = minutes
     return matrix
 
 
-async def run(state: TravelPlanState) -> dict:
+async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
+    tools = config["configurable"]["tools"] if config else None
     city_codes = state["destination_amap_cities"]
     keywords = state.get("search_keywords", [])
 
     # 1. Fetch raw POIs from 高德
-    raw_amap = await _fetch_amap_pois(city_codes)
+    raw_amap = await _fetch_amap_pois(city_codes, tools=tools)
 
     # 2. Fetch articles; score and extract POI names in one LLM batch call
-    articles = await _fetch_article_pois(keywords)
+    articles = await _fetch_article_pois(keywords, tools=tools)
     scores = await _score_sources_batch(articles)
 
     # 3. Build POI objects from 高德 data
@@ -185,6 +198,6 @@ async def run(state: TravelPlanState) -> dict:
     pois = pois[:MAX_POIS]
 
     # 7. Build travel time matrix (only adjacent pairs ≤50km)
-    matrix = await _build_travel_time_matrix(pois)
+    matrix = await _build_travel_time_matrix(pois, tools=tools)
 
     return {"pois": pois, "travel_time_matrix": matrix}
