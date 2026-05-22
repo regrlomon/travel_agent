@@ -9,3 +9,7 @@ __pycache__/
 run_*.py
 verify_*.py
 final_verification.md
+.idea/
+frontend/node_modules/
+frontend/dist/
+node_modules/

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 
 import litellm
@@ -6,7 +7,10 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from agent.state import TravelPlanState
+from agent import extract_json
 from models import FlightPair, POI
+
+logger = logging.getLogger(__name__)
 
 
 def _format_flights(pairs: list[FlightPair]) -> list[dict]:
@@ -45,15 +49,25 @@ Extract:
 
 Return JSON: {{"flight_choice": "...", "poi_prefs": "..."}}
 Return only valid JSON, no markdown."""
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    return json.loads(resp.choices[0].message.content)
+    try:
+        resp = await litellm.acompletion(
+            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+        )
+    except Exception:
+        logger.exception("LLM call failed in _parse_review_reply, user_text=%r", user_text)
+        raise
+    try:
+        return json.loads(extract_json(resp.choices[0].message.content))
+    except json.JSONDecodeError:
+        logger.error("JSON parse failed in _parse_review_reply, raw=%r", resp.choices[0].message.content)
+        raise
 
 
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
+    logger.info("[human_review] start, flights=%d pois=%d",
+                len(state.get("flight_pairs", [])), len(state.get("pois", [])))
     flights_summary = _format_flights(state.get("flight_pairs", []))
     poi_summary = _format_pois(state.get("pois", []))
 
@@ -70,6 +84,8 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
         config=config,
     )
 
+    logger.info("[human_review] done, flight_choice=%r poi_prefs=%r",
+                choice.get("flight_choice"), choice.get("poi_prefs"))
     return {
         "user_flight_choice": choice.get("flight_choice") or None,
         "user_poi_prefs": choice.get("poi_prefs") or None,

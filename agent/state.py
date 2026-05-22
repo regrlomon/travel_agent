@@ -24,7 +24,7 @@ class TravelPlanState(TypedDict, total=False):
 
     # ── Written by ② discover_pois ──────────────────────────────────────
     pois: list[POI]
-    travel_time_matrix: dict[tuple[str, str], int]
+    travel_time_matrix: dict[str, int]
 
     # ── Written by ③ scrape_flights ─────────────────────────────────────
     flight_pairs: list[FlightPair]

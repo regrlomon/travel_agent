@@ -115,7 +115,6 @@ async def run_async(
             "date": date,
             "platforms": platforms,
         },
-        "results": {k: v for k, v in results.items()},
         "merged": all_flights,
         "summary": {
             "total_flights": len(all_flights),

@@ -1,5 +1,0 @@
-# 运行依赖
-playwright>=1.40.0
-
-# 安装后还需执行一次浏览器初始化：
-#   playwright install chromium

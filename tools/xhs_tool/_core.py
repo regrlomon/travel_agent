@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import random
+import shutil
 from pathlib import Path
 
 
@@ -35,7 +36,13 @@ def _ensure_ready():
     node_modules = os.path.join(SPIDER_XHS_DIR, "node_modules")
     if not os.path.isdir(node_modules):
         import subprocess
-        subprocess.run(["npm", "install", "--prefix", SPIDER_XHS_DIR], check=True)
+        npm = shutil.which("npm") or shutil.which("npm.cmd")
+        if not npm:
+            raise RuntimeError(
+                "找不到 npm，请确认 Node.js 已安装并加入系统 PATH，"
+                "或手动在 Spider_XHS 目录执行 `npm install`"
+            )
+        subprocess.run([npm, "install", "--prefix", SPIDER_XHS_DIR], check=True)
     os.chdir(SPIDER_XHS_DIR)
     if SPIDER_XHS_DIR not in sys.path:
         sys.path.insert(0, SPIDER_XHS_DIR)

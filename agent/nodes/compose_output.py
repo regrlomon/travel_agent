@@ -1,6 +1,10 @@
 # agent/nodes/compose_output.py
+import logging
+
 from agent.state import TravelPlanState
 from models import FlightPair, ItineraryOption
+
+logger = logging.getLogger(__name__)
 
 # Cities known to not have their own airport
 NO_AIRPORT_CITIES = {"苏州", "无锡", "嘉兴", "佛山", "东莞", "中山"}
@@ -28,6 +32,8 @@ def _group_flights_comparison(pairs: list[FlightPair]) -> list[dict]:
 
 
 def run(state: TravelPlanState, config=None) -> dict:
+    logger.info("[compose_output] start, pois=%d pairs=%d itineraries=%d",
+                len(state.get("pois", [])), len(state.get("flight_pairs", [])), len(state.get("itineraries", [])))
     pois = state.get("pois", [])
     flight_pairs = state.get("flight_pairs", [])
     itineraries = state.get("itineraries", [])

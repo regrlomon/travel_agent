@@ -1,9 +1,13 @@
 import json
+import logging
 import os
 import litellm
 from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
+from agent import extract_json
 from models import POI, FlightPair, DayPlan, ItineraryOption
+
+logger = logging.getLogger(__name__)
 
 
 def _build_poi_table(pois: list[POI]) -> str:
@@ -62,19 +66,27 @@ Return a JSON array of plans:
 ]
 Return only valid JSON, no markdown."""
 
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-    )
-    return json.loads(resp.choices[0].message.content)
+    try:
+        resp = await litellm.acompletion(
+            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+    except Exception:
+        logger.exception("LLM call failed in _phase1_select, pois=%d pairs=%d", len(pois), len(pairs))
+        raise
+    try:
+        return json.loads(extract_json(resp.choices[0].message.content))
+    except json.JSONDecodeError:
+        logger.error("JSON parse failed in _phase1_select, raw=%r", resp.choices[0].message.content)
+        raise
 
 
 async def _phase2_generate(
     plan_skeleton: dict,
     poi_map: dict[str, POI],
     pair_map: dict[str, FlightPair],
-    travel_time_matrix: dict[tuple[str, str], int],
+    travel_time_matrix: dict[str, int],
 ) -> ItineraryOption:
     """Phase 2: full objects for selected items → LLM generates detailed day plans."""
     fp = pair_map[plan_skeleton["pair_id"]]
@@ -86,7 +98,8 @@ async def _phase2_generate(
     )
     time_notes = "\n".join(
         f"  {poi_map[a].name if a in poi_map else a} → {poi_map[b].name if b in poi_map else b}: {m} min drive"
-        for (a, b), m in travel_time_matrix.items()
+        for key, m in travel_time_matrix.items()
+        for a, b in [key.split("|", 1)]
         if a in selected_pois and b in selected_pois
     )
 
@@ -116,12 +129,20 @@ Return JSON:
 }}
 Return only valid JSON, no markdown."""
 
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-    )
-    raw = json.loads(resp.choices[0].message.content)
+    try:
+        resp = await litellm.acompletion(
+            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+    except Exception:
+        logger.exception("LLM call failed in _phase2_generate, plan_id=%r", plan_skeleton.get("plan_id"))
+        raise
+    try:
+        raw = json.loads(resp.choices[0].message.content)
+    except json.JSONDecodeError:
+        logger.error("JSON parse failed in _phase2_generate, raw=%r", resp.choices[0].message.content)
+        raise
 
     days = []
     for day_skeleton in plan_skeleton["days"]:
@@ -143,6 +164,7 @@ Return only valid JSON, no markdown."""
 
 
 async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
+    logger.info("[plan_itinerary] start, pois=%d pairs=%d", len(state.get("pois", [])), len(state.get("flight_pairs", [])))
     pois = state["pois"]
     pairs = state["flight_pairs"]
     matrix = state.get("travel_time_matrix", {})
@@ -165,4 +187,5 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
         option = await _phase2_generate(skeleton, poi_map, pair_map, matrix)
         itineraries.append(option)
 
+    logger.info("[plan_itinerary] done, itineraries=%d", len(itineraries))
     return {"itineraries": itineraries}

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -6,6 +7,16 @@ from langchain_core.runnables import RunnableConfig
 
 from agent.state import TravelPlanState
 from models import Flight, FlightPair
+
+logger = logging.getLogger(__name__)
+
+# 机场 IATA → 城市级 IATA，防止 LLM 返回机场代码而非城市代码
+_AIRPORT_TO_CITY: dict[str, str] = {
+    "PEK": "BJS", "PKX": "BJS",           # 北京
+    "PVG": "SHA",                           # 上海浦东（SHA 本身就是城市码）
+    "TFU": "CTU", "CTU": "CTU",            # 成都
+    "CZX": "CZX",
+}
 
 
 def _raw_to_flight(raw: dict, depart_date: date) -> Flight:
@@ -86,6 +97,8 @@ async def _scrape_details(
 
 
 async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
+    logger.info("[scrape_flights] start, origin=%r dest=%r dates=%d",
+                state.get("origin_airports"), state.get("destination_airports"), len(state.get("depart_dates", [])))
     origin_airports: list[str] = state["origin_airports"]
     dest_airports: list[str] = state["destination_airports"]
     depart_dates: list[date] = state["depart_dates"]
@@ -102,8 +115,13 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
 
     airport_to_city: dict[str, str] = {v: k for k, v in city_codes.items()}
 
-    origin_cities = [c for c in (airport_to_city.get(a) for a in origin_airports) if c]
-    dest_cities = [c for c in (airport_to_city.get(a) for a in dest_airports) if c]
+    def _resolve(code: str) -> str | None:
+        """Airport code → city name, with fallback for individual airport codes."""
+        city_iata = _AIRPORT_TO_CITY.get(code, code)
+        return airport_to_city.get(city_iata)
+
+    origin_cities = [c for c in (_resolve(a) for a in origin_airports) if c]
+    dest_cities = [c for c in (_resolve(a) for a in dest_airports) if c]
 
     if not origin_cities:
         warnings.append(f"出发机场 {origin_airports} 不在支持列表，跳过机票查询")
@@ -135,6 +153,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     if not flight_pairs:
         warnings.append("机票数据获取失败，请自行查询各平台")
 
+    logger.info("[scrape_flights] done, pairs=%d best_date=%s", len(flight_pairs), best_date)
     return {
         "flight_pairs": flight_pairs,
         "selected_dates": selected_dates,

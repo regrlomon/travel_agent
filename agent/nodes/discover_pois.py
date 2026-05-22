@@ -1,6 +1,7 @@
 # agent/nodes/discover_pois.py
 import asyncio
 import json
+import logging
 import math
 import os
 import uuid
@@ -8,7 +9,10 @@ from typing import Optional
 import litellm
 from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
+from agent import extract_json
 from models import POI, POISource
+
+logger = logging.getLogger(__name__)
 
 EARTH_RADIUS_KM = 6371.0
 MAX_POIS = 40
@@ -49,19 +53,31 @@ def _compute_confidence(mention_count: int, platform_count: int, amap_only: bool
 
 
 async def _fetch_amap_pois(city_codes: list[str], keywords: str = "景点", tools: dict | None = None) -> list[dict]:
-    if tools is not None:
-        return await tools["amap"].search_pois(city_codes, keywords)
-    from tools.amap import search_pois
-    return await search_pois(city_codes, keywords, api_key=os.getenv("AMAP_API_KEY", ""))
+    try:
+        if tools is not None:
+            return await tools["amap"].search_pois(city_codes, keywords)
+        from tools.amap import search_pois
+        return await search_pois(city_codes, keywords, api_key=os.getenv("AMAP_API_KEY", ""))
+    except Exception:
+        logger.exception("高德 search_pois failed, city_codes=%r keywords=%r", city_codes, keywords)
+        raise
 
 
 async def _fetch_article_pois(keywords: list[str], tools: dict | None = None) -> list[dict]:
     """Fetch raw article text from XHS and Tavily, return as list of {platform, content}."""
     results = []
     if tools is not None:
-        xhs_notes = await tools["xhs"].scrape_notes(keywords)
+        try:
+            xhs_notes = await tools["xhs"].scrape_notes(keywords)
+        except Exception:
+            logger.exception("XHS scrape_notes failed, keywords=%r", keywords)
+            raise
         results.extend({"platform": "xiaohongshu", "content": n["content"]} for n in xhs_notes)
-        tavily = await tools["tavily"].search_travel_articles(keywords)
+        try:
+            tavily = await tools["tavily"].search_travel_articles(keywords)
+        except Exception:
+            logger.exception("Tavily search failed, keywords=%r", keywords)
+            raise
         results.extend({"platform": "mafengwo", "content": a["content"]} for a in tavily)
     else:
         from tools.xhs_tool import search_xhs, DEFAULT_COUNT
@@ -93,35 +109,49 @@ Articles:
 {batch_text}
 
 Return only a JSON array, no markdown."""
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    scored = json.loads(resp.choices[0].message.content)
+    # raises: litellm.APIConnectionError / AuthenticationError / RateLimitError
+    try:
+        resp = await litellm.acompletion(
+            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+        )
+    except Exception:
+        logger.exception("LLM call failed in _score_sources_batch, articles_count=%d", len(articles))
+        raise
+    try:
+        scored = json.loads(extract_json(resp.choices[0].message.content))
+    except json.JSONDecodeError:
+        logger.error("JSON parse failed in _score_sources_batch, raw=%r", resp.choices[0].message.content)
+        raise
     return {str(item["index"]): item for item in scored}
 
 
-async def _build_travel_time_matrix(pois: list[POI], tools: dict | None = None) -> dict[tuple[str, str], int]:
+async def _build_travel_time_matrix(pois: list[POI], tools: dict | None = None) -> dict[str, int]:
     """Compute driving times only for POI pairs within MAX_MATRIX_DISTANCE_KM."""
-    matrix: dict[tuple[str, str], int] = {}
+    matrix: dict[str, int] = {}
     for i, a in enumerate(pois):
         for j, b in enumerate(pois):
             if i >= j:
                 continue
             if _haversine_km(a.coords, b.coords) <= MAX_MATRIX_DISTANCE_KM:
                 if tools is not None:
-                    minutes = await tools["amap"].get_driving_time(a.coords, b.coords)
+                    try:
+                        minutes = await tools["amap"].get_driving_time(a.coords, b.coords)
+                    except Exception:
+                        logger.exception("高德 get_driving_time failed, a=%r b=%r", a.poi_id, b.poi_id)
+                        minutes = None
                 else:
                     from tools.amap import get_driving_time
                     minutes = await get_driving_time(a.coords, b.coords, api_key=os.getenv("AMAP_API_KEY", ""))
                 if minutes is not None:
-                    matrix[(a.poi_id, b.poi_id)] = minutes
-                    matrix[(b.poi_id, a.poi_id)] = minutes
+                    matrix[f"{a.poi_id}|{b.poi_id}"] = minutes
+                    matrix[f"{b.poi_id}|{a.poi_id}"] = minutes
     return matrix
 
 
 async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
+    logger.info("[discover_pois] start, city_codes=%r keywords=%r", state.get("destination_amap_cities"), state.get("search_keywords"))
     tools = config["configurable"]["tools"] if config else None
     city_codes = state["destination_amap_cities"]
     keywords = state.get("search_keywords", [])
@@ -157,15 +187,24 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     for idx, article in enumerate(articles):
         score_data = scores.get(str(idx), {})
         for poi_name in score_data.get("poi_names", []):
-            src = POISource(
-                platform=article["platform"],
-                mention_count=1,
-                llm_credibility=score_data.get("credibility", 0.5),
-                has_negative_reviews=score_data.get("has_negative_reviews", False),
-            )
+            platform = article["platform"]
+            credibility = score_data.get("credibility", 0.5)
+            has_neg = score_data.get("has_negative_reviews", False)
             existing = next((p for p in pois if p.name == poi_name), None)
             if existing:
-                existing.sources.append(src)
+                # 同平台已有 source 则合并，否则追加（上限 40 条）
+                merged = next((s for s in existing.sources if s.platform == platform), None)
+                if merged:
+                    merged.mention_count += 1
+                    merged.llm_credibility = max(merged.llm_credibility, credibility)
+                    merged.has_negative_reviews = merged.has_negative_reviews or has_neg
+                elif len(existing.sources) < 40:
+                    existing.sources.append(POISource(
+                        platform=platform,
+                        mention_count=1,
+                        llm_credibility=credibility,
+                        has_negative_reviews=has_neg,
+                    ))
                 existing.mention_count += 1
                 existing.platform_count = len({s.platform for s in existing.sources}) + 1
                 existing.tags = list(set(existing.tags + score_data.get("poi_tags", [])))
@@ -178,7 +217,12 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
                     tags=score_data.get("poi_tags", []),
                     desc="",
                     amap_rating=0.0,
-                    sources=[src],
+                    sources=[POISource(
+                        platform=platform,
+                        mention_count=1,
+                        llm_credibility=credibility,
+                        has_negative_reviews=has_neg,
+                    )],
                     mention_count=1,
                     platform_count=1,
                     confidence="low",
@@ -200,4 +244,5 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     # 7. Build travel time matrix (only adjacent pairs ≤50km)
     matrix = await _build_travel_time_matrix(pois, tools=tools)
 
+    logger.info("[discover_pois] done, pois=%d matrix_pairs=%d", len(pois), len(matrix))
     return {"pois": pois, "travel_time_matrix": matrix}
