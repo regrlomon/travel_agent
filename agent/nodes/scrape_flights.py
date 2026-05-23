@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -9,6 +10,64 @@ from agent.state import TravelPlanState
 from models import Flight, FlightPair
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_time_pref(pref: str | None) -> tuple[int, int] | None:
+    """Map a natural-language time preference to a (after_min, before_min) window.
+
+    Returns None if no preference or unrecognised.
+    Minutes are measured from midnight (e.g. 9:00 = 540).
+    """
+    if not pref:
+        return None
+    p = pref.strip()
+
+    # Skip keywords
+    if any(kw in p for kw in ("随意", "不限", "无所谓", "都行", "不要求")):
+        return None
+
+    # Around N o'clock: "9点左右" / "9点"
+    m = re.search(r"(\d{1,2})[点:：]", p)
+    if m:
+        h = int(m.group(1))
+        return (h - 1) * 60, (h + 1) * 60
+
+    # Named periods
+    if any(kw in p for kw in ("早上", "上午", "早班")):
+        return 6 * 60, 12 * 60
+    if any(kw in p for kw in ("中午",)):
+        return 11 * 60, 13 * 60
+    if any(kw in p for kw in ("下午",)):
+        return 12 * 60, 18 * 60
+    if any(kw in p for kw in ("傍晚", "晚上", "夜班")):
+        return 17 * 60, 22 * 60
+
+    # Relative constraints
+    if any(kw in p for kw in ("不要太早", "别太早", "不太早")):
+        return 8 * 60, 23 * 60
+    if any(kw in p for kw in ("不要太晚", "别太晚", "不太晚")):
+        return 0, 20 * 60
+
+    return None
+
+
+def _rank_by_time_pref(flights: list, pref: str | None) -> list:
+    """Return flights sorted by proximity to time preference window midpoint.
+
+    No flights are removed — only re-ordered.
+    """
+    window = _parse_time_pref(pref)
+    if window is None:
+        return flights
+    after_min, before_min = window
+    midpoint = (after_min + before_min) / 2
+
+    def _distance(flight) -> float:
+        t = flight.depart_time
+        flight_min = t.hour * 60 + t.minute
+        return abs(flight_min - midpoint)
+
+    return sorted(flights, key=_distance)
 
 
 def _raw_to_flight(raw: dict, depart_date: date) -> Flight:
@@ -131,8 +190,10 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     selected_dates = [best_date]
 
     outbound_flights = await _scrape_details(origin_city, dest_city, best_date, flight_client)
+    outbound_flights = _rank_by_time_pref(outbound_flights, state.get("depart_time_pref"))
     return_date = best_date + timedelta(days=state["duration_days"])
     return_flights = await _scrape_details(dest_city, origin_city, return_date, flight_client)
+    return_flights = _rank_by_time_pref(return_flights, state.get("return_time_pref"))
 
     flight_pairs = _assemble_flight_pairs(outbound_flights, return_flights)
 

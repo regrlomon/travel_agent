@@ -50,3 +50,67 @@ async def test_run_warns_when_no_flights(mocker):
     result = await run(state)
     assert result["flight_pairs"] == []
     assert len(result["warnings"]) > 0
+
+
+from agent.nodes.scrape_flights import _parse_time_pref, _rank_by_time_pref
+from models import Flight
+from datetime import datetime
+
+
+def _flight(hour: int, minute: int = 0) -> Flight:
+    return Flight(
+        platform="test", depart_airport="PVG", arrive_airport="CTU",
+        price=800, flight_no="MU1",
+        depart_time=datetime(2026, 7, 1, hour, minute),
+    )
+
+
+def test_parse_time_pref_morning():
+    after, before = _parse_time_pref("上午")
+    assert after == 6 * 60
+    assert before == 12 * 60
+
+
+def test_parse_time_pref_afternoon():
+    after, before = _parse_time_pref("下午")
+    assert after == 12 * 60
+    assert before == 18 * 60
+
+
+def test_parse_time_pref_around_nine():
+    after, before = _parse_time_pref("9点左右")
+    assert after == 8 * 60
+    assert before == 10 * 60
+
+
+def test_parse_time_pref_not_late():
+    result = _parse_time_pref("不要太晚")
+    assert result is not None
+    after_min, before_min = result
+    assert after_min == 0        # no lower bound (fly anytime from midnight)
+    assert before_min == 20 * 60  # cap at 20:00
+
+
+def test_parse_time_pref_no_preference():
+    assert _parse_time_pref(None) is None
+    assert _parse_time_pref("随意") is None
+    assert _parse_time_pref("不限") is None
+
+
+def test_rank_by_time_pref_sorts_closest_first():
+    flights = [_flight(14), _flight(9, 15), _flight(6)]
+    ranked = _rank_by_time_pref(flights, "9点左右")
+    assert ranked[0].depart_time.hour == 9
+
+
+def test_rank_by_time_pref_no_pref_unchanged():
+    flights = [_flight(14), _flight(9), _flight(6)]
+    ranked = _rank_by_time_pref(flights, None)
+    assert [f.depart_time.hour for f in ranked] == [14, 9, 6]
+
+
+def test_rank_by_time_pref_no_hard_filter():
+    """Even if no flight is in window, all are returned."""
+    flights = [_flight(22), _flight(23)]
+    ranked = _rank_by_time_pref(flights, "上午")
+    assert len(ranked) == 2
