@@ -42,4 +42,5 @@ async def test_llm_build_reply_asks_missing(mocker):
     mocker.patch("litellm.acompletion", AsyncMock(return_value=mock_resp))
 
     reply = await _llm_build_reply({"destination": "川西"})
-    assert len(reply) > 0
+    assert isinstance(reply, str)
+    assert len(reply) > 5
