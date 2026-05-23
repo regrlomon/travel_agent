@@ -20,6 +20,16 @@
       v-else-if="phase === 'progress'"
       :items="progressItems"
     />
+    <SelectInterests
+      v-else-if="phase === 'interests'"
+      :data="interestsData"
+      @reply="onReply"
+    />
+    <ConfirmIntent
+      v-else-if="phase === 'confirm'"
+      :data="confirmData"
+      @reply="onReply"
+    />
     <PlanReview
       v-else-if="phase === 'review'"
       :data="reviewData"
@@ -41,6 +51,8 @@ import { computed } from 'vue'
 import { useSSE } from './composables/useSSE.js'
 import ChatView     from './components/ChatView.vue'
 import ProgressView from './components/ProgressView.vue'
+import SelectInterests from './components/SelectInterests.vue'
+import ConfirmIntent   from './components/ConfirmIntent.vue'
 import PlanReview   from './components/PlanReview.vue'
 import ResultView   from './components/ResultView.vue'
 
