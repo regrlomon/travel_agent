@@ -3,10 +3,37 @@
     <header class="topbar">
       <span class="topbar-brand">✈ TRAVEL AI</span>
       <div class="stepper">
-        <div class="step-dot" :class="stepClass(1)"></div>
-        <div class="step-dot" :class="stepClass(2)"></div>
-        <div class="step-dot" :class="stepClass(3)"></div>
-        <div class="step-dot" :class="stepClass(4)"></div>
+        <div class="step-item">
+          <div class="step-dot" :class="stepClass(1)">
+            <span v-if="stepClass(1) === 'done'">✓</span>
+            <span v-else>1</span>
+          </div>
+          <span class="step-label" :class="stepClass(1)">告诉我</span>
+        </div>
+        <div class="step-line" :class="{ done: stepClass(1) === 'done' }"></div>
+        <div class="step-item">
+          <div class="step-dot" :class="stepClass(2)">
+            <span v-if="stepClass(2) === 'done'">✓</span>
+            <span v-else>2</span>
+          </div>
+          <span class="step-label" :class="stepClass(2)">规划中</span>
+        </div>
+        <div class="step-line" :class="{ done: stepClass(2) === 'done' }"></div>
+        <div class="step-item">
+          <div class="step-dot" :class="stepClass(3)">
+            <span v-if="stepClass(3) === 'done'">✓</span>
+            <span v-else>3</span>
+          </div>
+          <span class="step-label" :class="stepClass(3)">选方案</span>
+        </div>
+        <div class="step-line" :class="{ done: stepClass(3) === 'done' }"></div>
+        <div class="step-item">
+          <div class="step-dot" :class="stepClass(4)">
+            <span v-if="stepClass(4) === 'done'">✓</span>
+            <span v-else>4</span>
+          </div>
+          <span class="step-label" :class="stepClass(4)">出发</span>
+        </div>
       </div>
     </header>
 
@@ -85,6 +112,6 @@ function stepClass(n) {
   const current = map[phase.value] ?? 0
   if (n < current) return 'done'
   if (n === current) return 'active'
-  return ''
+  return 'pending'
 }
 </script>
