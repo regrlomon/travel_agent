@@ -231,9 +231,6 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
             depart_pref = parsed["updates"]["depart_time_pref"] or None
         if "return_time_pref" in parsed.get("updates", {}):
             return_pref = parsed["updates"]["return_time_pref"] or None
-        # re-extract time prefs if user mentioned them in update
-        if any(kw in confirm_reply.get("text", "") for kw in ("点", "上午", "下午", "晚上", "早")):
-            depart_pref, return_pref = await _llm_extract_time_prefs(confirm_reply.get("text", ""))
     else:
         # 5 rounds without explicit confirm — proceed anyway
         logger.warning("[collect_intent] confirm_intent loop reached max rounds, proceeding")
