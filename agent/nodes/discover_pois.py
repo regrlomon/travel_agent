@@ -91,12 +91,14 @@ def _compute_confidence(mention_count: int, platform_count: int, amap_only: bool
     return "low"
 
 
-async def _fetch_amap_pois(city_codes: list[str], keywords: str = "景点", tools: dict | None = None) -> list[dict]:
+async def _fetch_amap_pois(city_codes: list[str], keywords: str = "景点",
+                            types: str = "110000|120000|140000",
+                            tools: dict | None = None) -> list[dict]:
     try:
         if tools is not None:
-            return await tools["amap"].search_pois(city_codes, keywords)
+            return await tools["amap"].search_pois(city_codes, keywords, types=types)
         from tools.amap import search_pois
-        return await search_pois(city_codes, keywords, api_key=os.getenv("AMAP_API_KEY", ""))
+        return await search_pois(city_codes, keywords, api_key=os.getenv("AMAP_API_KEY", ""), types=types)
     except Exception:
         logger.exception("高德 search_pois failed, city_codes=%r keywords=%r", city_codes, keywords)
         raise
@@ -185,62 +187,86 @@ async def _build_travel_time_matrix(pois: list[POI], tools: dict | None = None) 
 
 
 async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
-    logger.info("[discover_pois] start, city_codes=%r keywords=%r", state.get("destination_amap_cities"), state.get("search_keywords"))
+    logger.info("[discover_pois] start, city_codes=%r region=%r",
+                state.get("destination_amap_cities"), state.get("destination_region"))
     tools = config["configurable"]["tools"] if config else None
     city_codes = state["destination_amap_cities"]
-    keywords = state.get("search_keywords", [])
+    region = state.get("destination_region", "")
+    city_key = "|".join(sorted(city_codes))
 
-    # 1. Fetch raw POIs from 高德
-    raw_amap = await _fetch_amap_pois(city_codes, tools=tools)
+    from tools.amap import CATEGORY_TYPES
+    import tools.xhs_cache as cache
 
-    # 2. Fetch articles (note: string matching extraction replaces LLM batch scoring)
-    articles = await _fetch_article_pois(keywords, tools=tools)
+    all_amap_raws: list[dict] = []
+    xhs_mentions: dict[str, dict] = {}
 
-    # 3. Build POI objects from 高德 data
+    for category in AMAP_CATEGORIES:
+        # ── Amap ──────────────────────────────────────────────────────────
+        amap_data = cache.get(city_key, category, "amap")
+        if not amap_data:
+            amap_data = await _fetch_amap_pois(
+                city_codes, keywords=category,
+                types=CATEGORY_TYPES[category], tools=tools
+            )
+            cache.set(city_key, category, "amap", amap_data)
+        all_amap_raws.extend(amap_data)
+
+        # ── XHS ───────────────────────────────────────────────────────────
+        xhs_data = cache.get(city_key, category, "xhs")
+        if not xhs_data:
+            keyword = CATEGORY_KEYWORDS[category].format(region=region)
+            articles = await _fetch_article_pois([keyword], tools=tools)
+            known_names = [r["name"] for r in amap_data]
+            xhs_data = _match_pois_in_articles(articles, known_names)
+            cache.set(city_key, category, "xhs", xhs_data)
+
+        for name, data in xhs_data.items():
+            if name in xhs_mentions:
+                xhs_mentions[name]["mention_count"] += data["mention_count"]
+                xhs_mentions[name]["has_negative"] = (
+                    xhs_mentions[name]["has_negative"] or data["has_negative"]
+                )
+            else:
+                xhs_mentions[name] = dict(data)
+
+    # ── Build POI objects ─────────────────────────────────────────────────
     pois: list[POI] = []
-    for raw in raw_amap:
+    seen_names: set[str] = set()
+    for raw in all_amap_raws:
+        name = raw["name"]
+        if name in seen_names:
+            continue
+        seen_names.add(name)
         loc = raw.get("location", "0,0").split(",")
-        coords = (float(loc[1]), float(loc[0]))  # lat, lng
+        coords = (float(loc[1]), float(loc[0]))
+        mention_data = xhs_mentions.get(name, {"mention_count": 0, "has_negative": False})
         p = POI(
             poi_id=str(uuid.uuid4()),
-            name=raw["name"],
+            name=name,
             coords=coords,
             category=raw.get("type", "景点"),
             tags=[],
-            desc=raw.get("address", "") if isinstance(raw.get("address"), str) else "",
+            desc=raw.get("address", ""),
             amap_rating=float(raw.get("biz_ext", {}).get("rating") or 0),
             sources=[],
-            mention_count=1,
-            platform_count=1,
-            confidence="medium",  # amap_only default
+            mention_count=mention_data["mention_count"] + 1,
+            platform_count=2 if mention_data["mention_count"] > 0 else 1,
+            confidence="medium",
+            has_negative=mention_data["has_negative"],
         )
         pois.append(p)
 
-    # 4. Recompute confidence for all POIs
+    # ── Confidence, dedup, truncate ───────────────────────────────────────
     for p in pois:
         p.confidence = _compute_confidence(
             p.mention_count,
             p.platform_count,
-            amap_only=(p.amap_rating > 0 and not p.sources),
+            amap_only=(p.platform_count == 1),
         )
-
-    # 5. Dedup and truncate to TOP 40
     pois = _dedup_pois(pois)
     pois.sort(key=lambda p: ({"high": 0, "medium": 1, "low": 2}[p.confidence], -p.amap_rating))
     pois = pois[:MAX_POIS]
 
-    # Emit top POIs for streaming UI (after dedup and sort, before slow matrix call)
-    emit_fn = (config or {}).get("configurable", {}).get("progress_emit") if config else None
-    if emit_fn and pois:
-        top_names = [p.name for p in pois[:10]]
-        emit_fn({
-            "type": "poi_found",
-            "total_found": len(pois),
-            "pois": top_names,
-        })
-
-    # 6. Build travel time matrix (only adjacent pairs ≤50km)
     matrix = await _build_travel_time_matrix(pois, tools=tools)
-
     logger.info("[discover_pois] done, pois=%d matrix_pairs=%d", len(pois), len(matrix))
     return {"pois": pois, "travel_time_matrix": matrix}

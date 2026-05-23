@@ -7,7 +7,6 @@ def make_state():
     return {
         "destination_amap_cities": ["513300"],
         "destination_region": "甘孜州",
-        "search_keywords": ["川西 攻略", "稻城亚丁 游记"],
         "transport_mode": "self_drive",
         "difficulty_level": "medium",
         "interests": ["徒步"],
@@ -41,14 +40,21 @@ def test_compute_confidence_low():
 
 @pytest.mark.asyncio
 async def test_run_returns_pois_and_matrix(mocker):
-    mocker.patch("agent.nodes.discover_pois._fetch_amap_pois", new_callable=AsyncMock, return_value=[
-        {"id": "a1", "name": "稻城亚丁", "location": "100.3,28.67", "typecode": "110000", "biz_ext": {"rating": "4.9"}}
-    ])
-    mocker.patch("agent.nodes.discover_pois._fetch_article_pois", new_callable=AsyncMock, return_value=[])
-    mocker.patch("agent.nodes.discover_pois._build_travel_time_matrix", new_callable=AsyncMock, return_value={})
+    mocker.patch("agent.nodes.discover_pois._fetch_amap_pois", new_callable=AsyncMock,
+                 return_value=[
+                     {"name": "稻城亚丁", "location": "100.3,28.67",
+                      "type": "110000", "address": "四川", "biz_ext": {"rating": "4.9"}}
+                 ])
+    mocker.patch("agent.nodes.discover_pois._fetch_article_pois", new_callable=AsyncMock,
+                 return_value=[])
+    mocker.patch("agent.nodes.discover_pois._build_travel_time_matrix", new_callable=AsyncMock,
+                 return_value={})
+    mocker.patch("tools.xhs_cache.get", return_value=None)
+    mocker.patch("tools.xhs_cache.set", return_value=None)
 
     result = await run(make_state())
     assert len(result["pois"]) >= 1
+    assert result["pois"][0].name == "稻城亚丁"
     assert "travel_time_matrix" in result
 
 
