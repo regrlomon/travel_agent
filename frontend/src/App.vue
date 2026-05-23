@@ -46,6 +46,7 @@ import ResultView   from './components/ResultView.vue'
 
 const {
   phase, messages, progressItems, reviewData, finalResult, error,
+  confirmData, interestsData,
   startChat, sendReply,
 } = useSSE()
 
@@ -68,7 +69,7 @@ function onReply(text) {
 }
 
 function stepClass(n) {
-  const map = { idle: 0, chat: 1, progress: 2, review: 3, done: 4, error: 0 }
+  const map = { idle: 0, chat: 1, interests: 1, confirm: 1, progress: 2, review: 3, done: 4, error: 0 }
   const current = map[phase.value] ?? 0
   if (n < current) return 'done'
   if (n === current) return 'active'

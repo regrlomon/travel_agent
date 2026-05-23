@@ -7,6 +7,8 @@ export function useSSE() {
   const reviewData = ref(null)      // {message, plans:[...]}
   const finalResult = ref(null)     // compose_output result
   const error = ref(null)
+  const confirmData = ref(null)
+  const interestsData = ref(null)
 
   let jobId = null
   let interruptId = null
@@ -18,6 +20,8 @@ export function useSSE() {
     reviewData.value = null
     finalResult.value = null
     error.value = null
+    confirmData.value = null
+    interestsData.value = null
     phase.value = 'chat'
 
     if (userText) {
@@ -43,12 +47,19 @@ export function useSSE() {
 
       if (msg.type === 'hitl_request') {
         interruptId = msg.interrupt_id
-        if (msg.data.type === 'collect_intent') {
+        const d = msg.data
+        if (d.type === 'collect_intent') {
           phase.value = 'chat'
-          messages.value.push({ role: 'ai', text: msg.data.message })
-        } else if (msg.data.type === 'review_plan') {
+          messages.value.push({ role: 'ai', text: d.message })
+        } else if (d.type === 'select_interests') {
+          phase.value = 'interests'
+          interestsData.value = d
+        } else if (d.type === 'confirm_intent') {
+          phase.value = 'confirm'
+          confirmData.value = d.summary
+        } else if (d.type === 'review_plan') {
           phase.value = 'review'
-          reviewData.value = msg.data
+          reviewData.value = d
         }
       } else if (msg.type === 'progress') {
         phase.value = 'progress'
@@ -56,6 +67,10 @@ export function useSSE() {
       } else if (msg.type === 'done') {
         finalResult.value = msg.result
         phase.value = 'done'
+        eventSource.close()
+      } else if (msg.type === 'error') {
+        error.value = msg.message
+        phase.value = 'error'
         eventSource.close()
       }
     }
@@ -86,6 +101,7 @@ export function useSSE() {
 
   return {
     phase, messages, progressItems, reviewData, finalResult, error,
+    confirmData, interestsData,
     startChat, sendReply,
   }
 }
