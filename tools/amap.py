@@ -4,6 +4,12 @@ from langsmith import traceable
 
 AMAP_BASE = "https://restapi.amap.com/v3"
 
+CATEGORY_TYPES: dict[str, str] = {
+    "景点": "110000|120000|140000",
+    "美食": "050000",
+    "娱乐": "080000",
+}
+
 
 async def get_district_codes(city_names: list[str], api_key: str) -> dict[str, str]:
     """Map city names to 高德 adcodes via the district API (avoids LLM hallucinating numeric codes)."""
@@ -132,8 +138,9 @@ class AmapClient:
         return await get_district_codes(city_names, api_key=self.api_key)
 
     @traceable(name="amap_search_pois")
-    async def search_pois(self, city_codes: list[str], keywords: str = "景点") -> list[dict]:
-        return await search_pois(city_codes, keywords, api_key=self.api_key)
+    async def search_pois(self, city_codes: list[str], keywords: str = "景点",
+                          types: str = "110000|120000|140000") -> list[dict]:
+        return await search_pois(city_codes, keywords, api_key=self.api_key, types=types)
 
     @traceable(name="amap_driving_time_batch")
     async def get_driving_time_batch(self, origins: list[tuple], dest: tuple) -> "list[int | None]":

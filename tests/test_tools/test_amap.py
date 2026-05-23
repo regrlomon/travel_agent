@@ -57,3 +57,12 @@ async def test_check_transit_reachable_false_over_limit(mock_httpx_get):
     ))
     ok = await check_transit_reachable((28.67, 100.3), (30.07, 102.72), "513300", api_key="fake")
     assert ok is False
+
+
+def test_category_types_covers_all_categories():
+    from tools.amap import CATEGORY_TYPES
+    assert "景点" in CATEGORY_TYPES
+    assert "美食" in CATEGORY_TYPES
+    assert "娱乐" in CATEGORY_TYPES
+    assert "110000" in CATEGORY_TYPES["景点"]
+    assert "050000" in CATEGORY_TYPES["美食"]
