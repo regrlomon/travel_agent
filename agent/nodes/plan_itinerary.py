@@ -31,6 +31,39 @@ def _build_flight_table(pairs: list[FlightPair]) -> str:
     return "\n".join(lines)
 
 
+async def _stream_narrative(
+    pois: list,
+    pairs: list,
+    interests: list[str],
+    duration_days: int,
+    config,
+    emit_fn,
+) -> None:
+    """Stream a brief natural-language summary via stream_text tokens before JSON planning."""
+    if emit_fn is None:
+        return
+    top_poi_names = ", ".join(p.name for p in pois[:6]) or "（待定）"
+    flight_hint = ""
+    if pairs:
+        fp = pairs[0]
+        flight_hint = f"，机票约 ¥{fp.total_price}/人，去程 {fp.outbound.depart_time.strftime('%H:%M')} 出发"
+    prompt = (
+        f"你是旅行规划助手，用2-3句中文自然语言（不用列表，不用JSON）概括以下信息：\n"
+        f"- 行程：{duration_days}天\n"
+        f"- 用户兴趣：{', '.join(interests) if interests else '综合观光'}\n"
+        f"- 已收录景点代表：{top_poi_names}\n"
+        f"- 航班情况：{'已找到可选航班' + flight_hint if pairs else '暂无航班数据'}\n"
+        f"语气友好，直接输出文字，不要标题或符号。"
+    )
+    try:
+        llm = get_llm(temperature=0.5)
+        async for chunk in llm.astream([HumanMessage(content=prompt)], config):
+            if chunk.content:
+                emit_fn({"type": "stream_text", "token": chunk.content})
+    except Exception:
+        logger.warning("[plan_itinerary] narrative streaming failed, skipping")
+
+
 async def _phase1_select(pois: list[POI], pairs: list[FlightPair], interests: list[str], duration_days: int,
                           user_flight_choice=None, user_poi_prefs=None, config=None) -> list[dict]:
     poi_table = _build_poi_table(pois)
@@ -185,6 +218,9 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
 
     poi_map = {p.poi_id: p for p in pois}
     pair_map = {fp.pair_id: fp for fp in pairs}
+
+    progress_emit = (config or {}).get("configurable", {}).get("progress_emit")
+    await _stream_narrative(pois, pairs, interests, duration_days, config, progress_emit)
 
     plan_skeletons = await _phase1_select(
         pois, pairs, interests, duration_days, user_flight_choice, user_poi_prefs, config=config
