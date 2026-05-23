@@ -45,9 +45,37 @@ async def test_run_returns_pois_and_matrix(mocker):
         {"id": "a1", "name": "稻城亚丁", "location": "100.3,28.67", "typecode": "110000", "biz_ext": {"rating": "4.9"}}
     ])
     mocker.patch("agent.nodes.discover_pois._fetch_article_pois", new_callable=AsyncMock, return_value=[])
-    mocker.patch("agent.nodes.discover_pois._score_sources_batch", new_callable=AsyncMock, return_value={})
     mocker.patch("agent.nodes.discover_pois._build_travel_time_matrix", new_callable=AsyncMock, return_value={})
 
     result = await run(make_state())
     assert len(result["pois"]) >= 1
     assert "travel_time_matrix" in result
+
+
+def test_match_pois_counts_mentions():
+    from agent.nodes.discover_pois import _match_pois_in_articles
+    articles = [
+        {"platform": "xiaohongshu", "content": "今天去了西湖，断桥真的超美，推荐！"},
+        {"platform": "xiaohongshu", "content": "断桥排队好长，有点失望，西湖还行"},
+    ]
+    result = _match_pois_in_articles(articles, ["西湖", "断桥", "雷峰塔"])
+    assert result["西湖"]["mention_count"] == 2
+    assert result["断桥"]["mention_count"] == 2
+    assert result["断桥"]["has_negative"] is True
+    assert result["西湖"]["has_negative"] is True
+    assert "雷峰塔" not in result
+
+
+def test_match_pois_skips_ad_articles():
+    from agent.nodes.discover_pois import _match_pois_in_articles
+    articles = [
+        {"platform": "xiaohongshu", "content": "灵隐寺探店合作联系我，风景很美"},
+    ]
+    result = _match_pois_in_articles(articles, ["灵隐寺"])
+    assert "灵隐寺" not in result
+
+
+def test_match_pois_empty_articles():
+    from agent.nodes.discover_pois import _match_pois_in_articles
+    result = _match_pois_in_articles([], ["西湖"])
+    assert result == {}

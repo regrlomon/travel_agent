@@ -19,6 +19,16 @@ EARTH_RADIUS_KM = 6371.0
 MAX_POIS = 40
 MAX_MATRIX_DISTANCE_KM = 50.0
 
+_NEGATIVE_KW = ["排队", "坑", "不推荐", "踩雷", "失望", "太贵", "避雷", "后悔", "人太多"]
+_AD_KW = ["合作", "探店", "种草推广", "联系我", "私信", "带货"]
+
+AMAP_CATEGORIES = ["景点", "美食", "娱乐"]
+CATEGORY_KEYWORDS = {
+    "景点": "{region} 景点攻略",
+    "美食": "{region} 美食推荐",
+    "娱乐": "{region} 娱乐活动",
+}
+
 
 def _clean_content(title: str, content: str) -> str:
     """规范化文章文本：合并标题+正文，去除噪音。"""
@@ -54,6 +64,23 @@ def _dedup_pois(pois: list[POI], radius_m: float = 200.0) -> list[POI]:
         else:
             merged.append(poi)
     return merged
+
+
+def _match_pois_in_articles(articles: list[dict], known_names: list[str]) -> dict[str, dict]:
+    result: dict[str, dict] = {}
+    for article in articles:
+        text = article["content"]
+        if any(kw in text for kw in _AD_KW):
+            continue
+        has_negative = any(kw in text for kw in _NEGATIVE_KW)
+        for name in known_names:
+            if name in text:
+                if name not in result:
+                    result[name] = {"mention_count": 0, "has_negative": False}
+                result[name]["mention_count"] += 1
+                if has_negative:
+                    result[name]["has_negative"] = True
+    return result
 
 
 def _compute_confidence(mention_count: int, platform_count: int, amap_only: bool = False) -> str:
@@ -115,40 +142,6 @@ async def _fetch_article_pois(keywords: list[str], tools: dict | None = None) ->
     return results
 
 
-async def _score_sources_batch(articles: list[dict], config=None) -> dict[str, dict]:
-    """Batch-score all articles in one LLM call. Returns {article_index: {credibility, has_negative, pois}}."""
-    if not articles:
-        return {}
-    batch_text = "\n---\n".join(f"[{i}] ({a['platform']}): {a['content'][:500]}" for i, a in enumerate(articles))
-    prompt = f"""You are analyzing travel articles for credibility and POI extraction.
-
-For each article below (numbered [0], [1], etc.), output a JSON array where each element has:
-- index: article number
-- credibility: float 0-1 (low = ad/promotional content, high = genuine travel notes with complaints/details)
-- has_negative_reviews: bool
-- poi_names: list of attraction names mentioned
-- poi_tags: list of tags inferred (choose from: 旅拍, 自然风光, 徒步, 爬山, 人文古迹, 美食, 休闲)
-
-Articles:
-{batch_text}
-
-Return only a JSON array, no markdown."""
-    try:
-        llm = get_llm(temperature=0.1)
-        resp = await llm.ainvoke([{"role": "user", "content": prompt}], config)
-        content = resp.content
-    except Exception:
-        logger.exception("LLM call failed in _score_sources_batch, articles_count=%d", len(articles))
-        raise
-    logger.info("[llm_output] _score_sources_batch\n%s", content)
-    try:
-        scored = json.loads(extract_json(content))
-    except json.JSONDecodeError:
-        logger.error("JSON parse failed in _score_sources_batch, raw=%r", content)
-        raise
-    return {str(item["index"]): item for item in scored}
-
-
 async def _build_travel_time_matrix(pois: list[POI], tools: dict | None = None) -> dict[str, int]:
     """Compute driving times using batch API: one concurrent request per destination POI.
     Reduces API calls from O(n²) individual calls to O(n) concurrent batch calls.
@@ -200,9 +193,8 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     # 1. Fetch raw POIs from 高德
     raw_amap = await _fetch_amap_pois(city_codes, tools=tools)
 
-    # 2. Fetch articles; score and extract POI names in one LLM batch call
+    # 2. Fetch articles (note: string matching extraction replaces LLM batch scoring)
     articles = await _fetch_article_pois(keywords, tools=tools)
-    scores = await _score_sources_batch(articles, config)
 
     # 3. Build POI objects from 高德 data
     pois: list[POI] = []
@@ -224,52 +216,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
         )
         pois.append(p)
 
-    # 4. Merge article POIs into the list
-    for idx, article in enumerate(articles):
-        score_data = scores.get(str(idx), {})
-        for poi_name in score_data.get("poi_names", []):
-            platform = article["platform"]
-            credibility = score_data.get("credibility", 0.5)
-            has_neg = score_data.get("has_negative_reviews", False)
-            existing = next((p for p in pois if p.name == poi_name), None)
-            if existing:
-                # 同平台已有 source 则合并，否则追加（上限 40 条）
-                merged = next((s for s in existing.sources if s.platform == platform), None)
-                if merged:
-                    merged.mention_count += 1
-                    merged.llm_credibility = max(merged.llm_credibility, credibility)
-                    merged.has_negative_reviews = merged.has_negative_reviews or has_neg
-                elif len(existing.sources) < 40:
-                    existing.sources.append(POISource(
-                        platform=platform,
-                        mention_count=1,
-                        llm_credibility=credibility,
-                        has_negative_reviews=has_neg,
-                    ))
-                existing.mention_count += 1
-                existing.platform_count = len({s.platform for s in existing.sources}) + 1
-                existing.tags = list(set(existing.tags + score_data.get("poi_tags", [])))
-            else:
-                pois.append(POI(
-                    poi_id=str(uuid.uuid4()),
-                    name=poi_name,
-                    coords=(0.0, 0.0),
-                    category="景点",
-                    tags=score_data.get("poi_tags", []),
-                    desc="",
-                    amap_rating=0.0,
-                    sources=[POISource(
-                        platform=platform,
-                        mention_count=1,
-                        llm_credibility=credibility,
-                        has_negative_reviews=has_neg,
-                    )],
-                    mention_count=1,
-                    platform_count=1,
-                    confidence="low",
-                ))
-
-    # 5. Recompute confidence for all POIs
+    # 4. Recompute confidence for all POIs
     for p in pois:
         p.confidence = _compute_confidence(
             p.mention_count,
@@ -277,7 +224,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
             amap_only=(p.amap_rating > 0 and not p.sources),
         )
 
-    # 6. Dedup and truncate to TOP 40
+    # 5. Dedup and truncate to TOP 40
     pois = _dedup_pois(pois)
     pois.sort(key=lambda p: ({"high": 0, "medium": 1, "low": 2}[p.confidence], -p.amap_rating))
     pois = pois[:MAX_POIS]
@@ -292,7 +239,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
             "pois": top_names,
         })
 
-    # 7. Build travel time matrix (only adjacent pairs ≤50km)
+    # 6. Build travel time matrix (only adjacent pairs ≤50km)
     matrix = await _build_travel_time_matrix(pois, tools=tools)
 
     logger.info("[discover_pois] done, pois=%d matrix_pairs=%d", len(pois), len(matrix))
