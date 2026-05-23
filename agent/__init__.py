@@ -1,11 +1,4 @@
-import os
 import re
-import litellm
-
-if api_base := os.getenv("LLM_API_BASE"):
-    litellm.api_base = api_base
-if api_key := os.getenv("LLM_API_KEY"):
-    litellm.api_key = api_key
 
 
 def extract_json(text: str) -> str:
