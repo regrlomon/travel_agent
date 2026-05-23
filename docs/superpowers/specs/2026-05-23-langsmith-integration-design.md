@@ -41,7 +41,7 @@ def get_llm(temperature: float = 0.2) -> ChatOpenAI:
     )
 ```
 
-Each node replaces:
+Each node that calls the LLM (`collect_intent`, `parse_input`, `plan_itinerary`) replaces:
 ```python
 # before
 resp = await litellm.acompletion(model=..., messages=[...], temperature=...)
@@ -79,8 +79,7 @@ Resulting trace shape per job:
 ├── plan_itinerary
 │   ├── ChatOpenAI  (_phase1_select)
 │   └── ChatOpenAI  (_phase2_generate × N plans)
-└── compose_output
-    └── ChatOpenAI
+└── compose_output  (no LLM call — pure data formatting)
 ```
 
 ### job_id Correlation
@@ -98,7 +97,9 @@ def _build_config(job_id: str) -> dict:
 
 ### Dataset Auto-Collection
 
-After each successful job (no errors, `type == "done"`), `worker/tasks.py` calls the LangSmith SDK to create a dataset example:
+After each successful job (no errors, `type == "done"`), `worker/tasks.py` calls the LangSmith SDK to create a dataset example.
+
+`destination`, `origin`, `duration_days`, `interests` are NOT present in `initial_state` — they are written by `collect_intent` during execution. The `result` returned by `graph.ainvoke` is the complete final state and contains all fields, so dataset inputs are read from `result` directly. `_handle_result` signature is unchanged.
 
 ```python
 from langsmith import Client as LangSmithClient
@@ -106,7 +107,7 @@ from langsmith import Client as LangSmithClient
 LANGSMITH_DATASET = "travel-agent-traces"
 _ls_client = LangSmithClient()
 
-def _auto_add_to_dataset(job_id: str, initial_state: dict, result: dict):
+def _auto_add_to_dataset(job_id: str, result: dict):
     try:
         try:
             dataset = _ls_client.read_dataset(dataset_name=LANGSMITH_DATASET)
@@ -115,10 +116,10 @@ def _auto_add_to_dataset(job_id: str, initial_state: dict, result: dict):
 
         _ls_client.create_example(
             inputs={
-                "destination":   initial_state.get("destination"),
-                "origin":        initial_state.get("origin"),
-                "duration_days": initial_state.get("duration_days"),
-                "interests":     initial_state.get("interests", []),
+                "destination":   result.get("destination"),
+                "origin":        result.get("origin"),
+                "duration_days": result.get("duration_days"),
+                "interests":     result.get("interests", []),
             },
             outputs={
                 "itineraries_count": len(result.get("itineraries", [])),
@@ -134,11 +135,7 @@ def _auto_add_to_dataset(job_id: str, initial_state: dict, result: dict):
 
 Failures in dataset write are swallowed — a LangSmith outage must never affect job execution.
 
-`_handle_result` signature changes to accept `initial_state`:
-
-```python
-def _handle_result(job_id: str, initial_state: dict, result: dict): ...
-```
+`_handle_result` signature is unchanged: `def _handle_result(job_id: str, result: dict)`.
 
 ## File Change Summary
 
@@ -149,8 +146,7 @@ def _handle_result(job_id: str, initial_state: dict, result: dict): ...
 | `agent/nodes/collect_intent.py` | Switch to `get_llm()` + `ainvoke` |
 | `agent/nodes/parse_input.py` | Switch to `get_llm()` + `ainvoke` |
 | `agent/nodes/plan_itinerary.py` | Switch to `get_llm()` + `ainvoke` |
-| `agent/nodes/compose_output.py` | Switch to `get_llm()` + `ainvoke` |
-| `worker/tasks.py` | Add metadata to config; add `_auto_add_to_dataset`; thread `initial_state` through `_handle_result` |
+| `worker/tasks.py` | Add metadata to config; add `_auto_add_to_dataset` (reads from final state, not initial_state) |
 | `requirements.txt` | Replace `litellm` with `langchain-openai` + `langsmith` |
 | `.env.example` | Add 4 LangSmith env vars |
 | `llm_config.yaml` | Delete |
