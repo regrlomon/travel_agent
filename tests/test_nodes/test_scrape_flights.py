@@ -109,3 +109,51 @@ def test_rank_by_time_pref_no_hard_filter():
     flights = [_flight(22), _flight(23)]
     ranked = _rank_by_time_pref(flights, "上午")
     assert len(ranked) == 2
+
+
+def make_flight(hour: int, airport_pair: tuple[str, str], price: int = 800, flight_no: str = "MU1") -> Flight:
+    dep, arr = airport_pair
+    return Flight(
+        platform="test", depart_airport=dep, arrive_airport=arr,
+        price=price, flight_no=flight_no,
+        depart_time=datetime(2026, 7, 1, hour, 0),
+    )
+
+
+def test_assemble_pairs_time_pref_wins_over_price():
+    """When depart_time_pref='上午', the first returned pair's outbound should depart in the morning."""
+    out_afternoon = make_flight(14, ("CAN", "LXA"), price=500, flight_no="Z1")
+    out_morning_exp = make_flight(9,  ("CAN", "LXA"), price=900, flight_no="Z2")
+    out_morning_cheap = make_flight(8, ("CAN", "LXA"), price=600, flight_no="Z3")
+    ret = make_flight(16, ("LXA", "CAN"), price=600, flight_no="R1")
+
+    pairs = _assemble_flight_pairs(
+        [out_afternoon, out_morning_exp, out_morning_cheap],
+        [ret],
+        depart_time_pref="上午",
+    )
+
+    assert pairs[0].outbound.depart_time.hour < 12
+    for p in pairs:
+        assert p.return_flight.depart_airport == p.outbound.arrive_airport
+
+
+def test_assemble_pairs_max_3():
+    """返回数量上限为 3。"""
+    outbounds = [make_flight(h, ("CAN", "LXA"), flight_no=f"O{h}") for h in range(6, 12)]
+    ret = make_flight(16, ("LXA", "CAN"), flight_no="R1")
+    pairs = _assemble_flight_pairs(outbounds, [ret], depart_time_pref=None)
+    assert len(pairs) <= 3
+
+
+def test_assemble_pairs_no_pref_unchanged_behavior():
+    """无偏好时：有效配对，pair_id 不为空。"""
+    out1 = make_flight(7, ("PVG", "DCY"), flight_no="A1")
+    out2 = make_flight(9, ("PVG", "CTU"), flight_no="A2")
+    ret1 = make_flight(16, ("DCY", "PVG"), flight_no="B1")
+    ret2 = make_flight(18, ("CTU", "PVG"), flight_no="B2")
+    pairs = _assemble_flight_pairs([out1, out2], [ret1, ret2])
+    assert len(pairs) == 2
+    for p in pairs:
+        assert p.pair_id
+        assert p.return_flight.depart_airport == p.outbound.arrive_airport

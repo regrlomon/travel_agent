@@ -86,26 +86,44 @@ def _raw_to_flight(raw: dict, depart_date: date) -> Flight:
 
 
 def _assemble_flight_pairs(
-    outbound_flights: list[Flight],
-    return_flights: list[Flight],
+    outbound_flights: list,
+    return_flights: list,
+    depart_time_pref: str | None = None,
+    return_time_pref: str | None = None,
+    max_pairs: int = 3,
 ) -> list[FlightPair]:
-    """Build cheapest FlightPair per route combo from outbound and return lists."""
-    best: dict[tuple, FlightPair] = {}
-    for out in outbound_flights:
-        for ret in return_flights:
-            if ret.depart_airport != out.arrive_airport:
-                continue
-            key = (out.depart_airport, out.arrive_airport)
-            total = out.price + ret.price
-            existing = best.get(key)
-            if existing is None or total < existing.total_price:
-                best[key] = FlightPair(
-                    pair_id=str(uuid.uuid4()),
-                    outbound=out,
-                    return_flight=ret,
-                    total_price=total,
-                )
-    return list(best.values())
+    """Return up to max_pairs FlightPairs ordered by time preference, then price.
+
+    Replaces the old cheapest-only logic that discarded time preference sorting.
+    """
+    ranked_out = _rank_by_time_pref(outbound_flights, depart_time_pref)
+    ranked_ret = _rank_by_time_pref(return_flights, return_time_pref)
+
+    ret_by_airport: dict[str, list] = {}
+    for ret in ranked_ret:
+        ret_by_airport.setdefault(ret.depart_airport, []).append(ret)
+
+    pairs: list[FlightPair] = []
+    seen_flight_no: set[str] = set()
+
+    for out in ranked_out:
+        if len(pairs) >= max_pairs:
+            break
+        if out.flight_no in seen_flight_no:
+            continue
+        rets = ret_by_airport.get(out.arrive_airport, [])
+        if not rets:
+            continue
+        best_ret = rets[0]  # already sorted by return time preference
+        pairs.append(FlightPair(
+            pair_id=str(uuid.uuid4()),
+            outbound=out,
+            return_flight=best_ret,
+            total_price=out.price + best_ret.price,
+        ))
+        seen_flight_no.add(out.flight_no)
+
+    return pairs
 
 
 async def _scrape_calendars(
@@ -190,12 +208,15 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     selected_dates = [best_date]
 
     outbound_flights = await _scrape_details(origin_city, dest_city, best_date, flight_client)
-    outbound_flights = _rank_by_time_pref(outbound_flights, state.get("depart_time_pref"))
     return_date = best_date + timedelta(days=state["duration_days"])
     return_flights = await _scrape_details(dest_city, origin_city, return_date, flight_client)
-    return_flights = _rank_by_time_pref(return_flights, state.get("return_time_pref"))
 
-    flight_pairs = _assemble_flight_pairs(outbound_flights, return_flights)
+    flight_pairs = _assemble_flight_pairs(
+        outbound_flights,
+        return_flights,
+        depart_time_pref=state.get("depart_time_pref"),
+        return_time_pref=state.get("return_time_pref"),
+    )
 
     if not flight_pairs:
         warnings.append("机票数据获取失败，请自行查询各平台")
