@@ -1,12 +1,11 @@
 import json
 import logging
-import os
 from typing import Optional
-from json_repair import repair_json
-import litellm
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
 from agent import extract_json
+from agent.llm import get_llm
 from models import POI, FlightPair, DayPlan, ItineraryOption
 
 logger = logging.getLogger(__name__)
@@ -33,7 +32,6 @@ def _build_flight_table(pairs: list[FlightPair]) -> str:
 
 async def _phase1_select(pois: list[POI], pairs: list[FlightPair], interests: list[str], duration_days: int,
                           user_flight_choice=None, user_poi_prefs=None) -> list[dict]:
-    """Phase 1: compressed tables → LLM selects POIs per plan per day."""
     poi_table = _build_poi_table(pois)
 
     user_context = ""
@@ -73,19 +71,16 @@ Return only valid JSON, no markdown."""
 
     logger.info("[llm_input] _phase1_select pois=%d pairs=%d chars=%d\n%s", len(pois), len(pairs), len(prompt), prompt)
     try:
-        resp = await litellm.acompletion(
-            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
+        llm = get_llm(temperature=0.3)
+        msg = await llm.ainvoke([HumanMessage(content=prompt)])
     except Exception:
         logger.exception("LLM call failed in _phase1_select, pois=%d pairs=%d", len(pois), len(pairs))
         raise
-    logger.info("[llm_output] _phase1_select\n%s", resp.choices[0].message.content)
+    logger.info("[llm_output] _phase1_select\n%s", msg.content)
     try:
-        return json.loads(repair_json(extract_json(resp.choices[0].message.content)))
+        return json.loads(extract_json(msg.content))
     except json.JSONDecodeError:
-        logger.error("JSON parse failed in _phase1_select, raw=%r", resp.choices[0].message.content)
+        logger.error("JSON parse failed in _phase1_select, raw=%r", msg.content)
         raise
 
 
@@ -95,7 +90,6 @@ async def _phase2_generate(
     pair_map: dict[str, FlightPair],
     travel_time_matrix: dict[str, int],
 ) -> ItineraryOption:
-    """Phase 2: full objects for selected items → LLM generates detailed day plans."""
     fp: Optional[FlightPair] = pair_map.get(plan_skeleton.get("pair_id"))
     selected_pois = {pid: poi_map[pid] for day in plan_skeleton["days"] for pid in day["poi_ids"] if pid in poi_map}
     short_to_poi = {pid[:8]: poi for pid, poi in poi_map.items()}
@@ -146,20 +140,17 @@ Return only valid JSON, no markdown."""
 
     logger.info("[llm_input] _phase2_generate plan_id=%r chars=%d\n%s", plan_skeleton.get("plan_id"), len(prompt), prompt)
     try:
-        resp = await litellm.acompletion(
-            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
+        llm = get_llm(temperature=0.2)
+        msg = await llm.ainvoke([HumanMessage(content=prompt)])
     except Exception:
         logger.exception("LLM call failed in _phase2_generate, plan_id=%r", plan_skeleton.get("plan_id"))
         raise
-    logger.info("[llm_output] _phase2_generate plan_id=%r\n%s", plan_skeleton.get("plan_id"), resp.choices[0].message.content)
+    logger.info("[llm_output] _phase2_generate plan_id=%r\n%s", plan_skeleton.get("plan_id"), msg.content)
     try:
-        raw = json.loads(repair_json(extract_json(resp.choices[0].message.content or "")))
-    except (json.JSONDecodeError, ValueError):
-        logger.warning("JSON parse failed in _phase2_generate plan_id=%r, using fallback", plan_skeleton.get("plan_id"))
-        raw = {}
+        raw = json.loads(extract_json(msg.content))
+    except json.JSONDecodeError:
+        logger.error("JSON parse failed in _phase2_generate, raw=%r", msg.content)
+        raise
 
     days = []
     for day_skeleton in plan_skeleton["days"]:

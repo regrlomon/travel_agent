@@ -1,11 +1,11 @@
 import json, os
 import logging
 from datetime import datetime
-import litellm
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 from agent.state import TravelPlanState
 from agent import extract_json
+from agent.llm import get_llm
 from models import Flight, FlightPair, DayPlan, POI, ItineraryOption
 
 logger = logging.getLogger(__name__)
@@ -117,14 +117,9 @@ Extract:
 
 Return JSON: {{"selected_option_id": "...", "adjustment_notes": "..."}}
 Return only valid JSON, no markdown."""
-    logger.info("[llm_input] _parse_user_reply chars=%d\n%s", len(prompt), prompt)
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    logger.info("[llm_output] _parse_user_reply\n%s", resp.choices[0].message.content)
-    return json.loads(extract_json(resp.choices[0].message.content or ""))
+    llm = get_llm(temperature=0.1)
+    resp = await llm.ainvoke([{"role": "user", "content": prompt}])
+    return json.loads(extract_json(resp.content))
 
 
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:

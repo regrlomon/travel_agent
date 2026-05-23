@@ -1,10 +1,11 @@
-import json, os
+import json
 import logging
 from datetime import date, timedelta
-import litellm
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
 from agent import extract_json
+from agent.llm import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -30,21 +31,17 @@ Return JSON with:
 Return only valid JSON, no markdown."""
     logger.info("[llm_input] _llm_parse_destination chars=%d\n%s", len(prompt), prompt)
     try:
-        resp = await litellm.acompletion(
-            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-        )
+        llm = get_llm(temperature=0.1)
+        msg = await llm.ainvoke([HumanMessage(content=prompt)])
     except Exception:
         logger.exception("LLM call failed in _llm_parse_destination, destination=%r origin=%r", destination, origin)
         raise
-    logger.info("[llm_output] _llm_parse_destination\n%s", resp.choices[0].message.content)
+    logger.info("[llm_output] _llm_parse_destination\n%s", msg.content)
     try:
-        return json.loads(extract_json(resp.choices[0].message.content))
+        return json.loads(extract_json(msg.content))
     except json.JSONDecodeError:
-        logger.error("JSON parse failed in _llm_parse_destination, raw=%r", resp.choices[0].message.content)
+        logger.error("JSON parse failed in _llm_parse_destination, raw=%r", msg.content)
         raise
-
 
 
 def _expand_dates(depart_date: str | None) -> list[date]:
@@ -79,4 +76,3 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
         "depart_dates":             _expand_dates(state.get("depart_date")),
         "search_keywords":          parsed["search_keywords"],
     }
-

@@ -1,30 +1,9 @@
-import json, os
-import logging
-from datetime import date
-import litellm
+import json
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 from agent.state import TravelPlanState
-from agent import extract_json
-
-logger = logging.getLogger(__name__)
-
-_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_current_date",
-            "description": "Returns today's date in YYYY-MM-DD format.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    }
-]
-
-
-def _dispatch_tool(name: str) -> str:
-    if name == "get_current_date":
-        return date.today().isoformat()
-    return ""
+from agent.llm import get_llm
 
 
 def _is_complete(collected: dict) -> bool:
@@ -49,47 +28,14 @@ Extract and return JSON with these keys (only include keys mentioned in message,
 - depart_date: string ISO date or null
 
 Return only valid JSON, no markdown."""
-
-    messages = [{"role": "user", "content": prompt}]
-    logger.info("[llm_input] _llm_extract chars=%d\n%s", len(prompt), prompt)
-
-    while True:
-        resp = await litellm.acompletion(
-            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-            messages=messages,
-            tools=_TOOLS,
-            tool_choice="auto",
-            temperature=0.1,
-        )
-        msg = resp.choices[0].message
-
-        if msg.tool_calls:
-            messages.append({
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
-            })
-            for tc in msg.tool_calls:
-                result = _dispatch_tool(tc.function.name)
-                logger.info("[tool_call] %s → %s", tc.function.name, result)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                })
-        else:
-            content = msg.content or ""
-            logger.info("[llm_output] _llm_extract\n%s", content)
-            try:
-                extracted = json.loads(extract_json(content))
-            except (json.JSONDecodeError, ValueError):
-                logger.warning("[llm_extract] failed to parse response, returning current collected")
-                return {**current}
-            merged = {**current}
-            for k, v in extracted.items():
-                if v is not None and v != [] and v != "":
-                    merged[k] = v
-            return merged
+    llm = get_llm(temperature=0.1)
+    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    extracted = json.loads(msg.content)
+    merged = {**current}
+    for k, v in extracted.items():
+        if v is not None and v != [] and v != "":
+            merged[k] = v
+    return merged
 
 
 async def _llm_build_reply(collected: dict) -> str:
@@ -112,14 +58,9 @@ Write ONE natural, warm reply in Chinese that:
 3. If destination is vague or unknown, offer 2-3 suggestions based on the style mentioned
 
 Keep it under 60 characters. Be friendly, not robotic. No bullet points."""
-    logger.info("[llm_input] _llm_build_reply chars=%d\n%s", len(prompt), prompt)
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
-    logger.info("[llm_output] _llm_build_reply\n%s", resp.choices[0].message.content)
-    return resp.choices[0].message.content.strip()
+    llm = get_llm(temperature=0.7)
+    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    return msg.content.strip()
 
 
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
