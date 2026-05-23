@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import re
 import uuid
 from typing import Optional
 import litellm
@@ -17,6 +18,16 @@ logger = logging.getLogger(__name__)
 EARTH_RADIUS_KM = 6371.0
 MAX_POIS = 40
 MAX_MATRIX_DISTANCE_KM = 50.0
+
+
+def _clean_content(title: str, content: str) -> str:
+    """规范化文章文本：合并标题+正文，去除噪音。"""
+    text = f"{title} {content}" if title else content
+    text = re.sub(r'#\S+', '', text)         # hashtags
+    text = re.sub(r'@\S+', '', text)         # @mentions
+    text = re.sub(r'https?://\S+', '', text) # URLs
+    text = re.sub(r'\s+', ' ', text)         # 折叠空白
+    return text.strip()
 
 
 def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -39,6 +50,7 @@ def _dedup_pois(pois: list[POI], radius_m: float = 200.0) -> list[POI]:
         if close:
             close.mention_count += poi.mention_count
             close.sources.extend(poi.sources)
+            close.sources = close.sources[:40]
         else:
             merged.append(poi)
     return merged
@@ -72,22 +84,34 @@ async def _fetch_article_pois(keywords: list[str], tools: dict | None = None) ->
         except Exception:
             logger.exception("XHS scrape_notes failed, keywords=%r", keywords)
             raise
-        results.extend({"platform": "xiaohongshu", "content": n["content"]} for n in xhs_notes)
+        results.extend(
+            {"platform": "xiaohongshu", "content": _clean_content(n.get("title", ""), n["content"])}
+            for n in xhs_notes
+        )
         try:
             tavily = await tools["tavily"].search_travel_articles(keywords)
         except Exception:
             logger.exception("Tavily search failed, keywords=%r", keywords)
             raise
-        results.extend({"platform": "mafengwo", "content": a["content"]} for a in tavily)
+        results.extend(
+            {"platform": "mafengwo", "content": _clean_content(a.get("title", ""), a["content"])}
+            for a in tavily
+        )
     else:
         from tools.xhs_tool import search_xhs, DEFAULT_COUNT
         from tools.tavily import search_travel_articles
         cookie = os.getenv("XHS_COOKIE", "")
         for keyword in keywords:
             notes = await asyncio.to_thread(search_xhs, keyword, DEFAULT_COUNT, True, cookie)
-            results.extend({"platform": "xiaohongshu", "content": n["content"]} for n in notes)
+            results.extend(
+                {"platform": "xiaohongshu", "content": _clean_content(n.get("title", ""), n["content"])}
+                for n in notes
+            )
         tavily = await search_travel_articles(keywords, api_key=os.getenv("TAVILY_API_KEY", ""))
-        results.extend({"platform": "mafengwo", "content": a["content"]} for a in tavily)
+        results.extend(
+            {"platform": "mafengwo", "content": _clean_content(a.get("title", ""), a["content"])}
+            for a in tavily
+        )
     return results
 
 
@@ -109,6 +133,7 @@ Articles:
 {batch_text}
 
 Return only a JSON array, no markdown."""
+    logger.info("[llm_input] _score_sources_batch articles=%d chars=%d\n%s", len(articles), len(prompt), prompt)
     # raises: litellm.APIConnectionError / AuthenticationError / RateLimitError
     try:
         resp = await litellm.acompletion(
@@ -119,6 +144,7 @@ Return only a JSON array, no markdown."""
     except Exception:
         logger.exception("LLM call failed in _score_sources_batch, articles_count=%d", len(articles))
         raise
+    logger.info("[llm_output] _score_sources_batch\n%s", resp.choices[0].message.content)
     try:
         scored = json.loads(extract_json(resp.choices[0].message.content))
     except json.JSONDecodeError:
@@ -145,8 +171,7 @@ async def _build_travel_time_matrix(pois: list[POI], tools: dict | None = None) 
                     from tools.amap import get_driving_time
                     minutes = await get_driving_time(a.coords, b.coords, api_key=os.getenv("AMAP_API_KEY", ""))
                 if minutes is not None:
-                    matrix[f"{a.poi_id}|{b.poi_id}"] = minutes
-                    matrix[f"{b.poi_id}|{a.poi_id}"] = minutes
+                    matrix[f"{a.poi_id[:8]}|{b.poi_id[:8]}"] = minutes
     return matrix
 
 

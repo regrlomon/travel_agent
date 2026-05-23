@@ -27,7 +27,6 @@ def _emit(job_id: str, payload: dict):
 
 def _handle_result(job_id: str, result: dict):
     """Inspect ainvoke return value — emit hitl_request if interrupted, done if complete."""
-    logger.info("[job=%s] LLM result: %s", job_id, json.dumps(result, ensure_ascii=False, default=str))
     interrupts = result.get("__interrupt__")
     if interrupts:
         interrupt_id = str(uuid.uuid4())

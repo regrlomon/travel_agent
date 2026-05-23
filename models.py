@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 
 
 @dataclass
@@ -55,5 +56,5 @@ class DayPlan:
 class ItineraryOption:
     option_id: str
     summary: str
-    flights: FlightPair
+    flights: Optional[FlightPair]
     days: list[DayPlan]

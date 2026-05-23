@@ -10,14 +10,6 @@ from models import Flight, FlightPair
 
 logger = logging.getLogger(__name__)
 
-# 机场 IATA → 城市级 IATA，防止 LLM 返回机场代码而非城市代码
-_AIRPORT_TO_CITY: dict[str, str] = {
-    "PEK": "BJS", "PKX": "BJS",           # 北京
-    "PVG": "SHA",                           # 上海浦东（SHA 本身就是城市码）
-    "TFU": "CTU", "CTU": "CTU",            # 成都
-    "CZX": "CZX",
-}
-
 
 def _raw_to_flight(raw: dict, depart_date: date) -> Flight:
     dep_dt = datetime.combine(
@@ -37,13 +29,10 @@ def _raw_to_flight(raw: dict, depart_date: date) -> Flight:
 def _assemble_flight_pairs(
     outbound_flights: list[Flight],
     return_flights: list[Flight],
-    dest_airports: set[str],
 ) -> list[FlightPair]:
-    """Build FlightPairs from outbound and return lists; only accept valid airport combos."""
+    """Build cheapest FlightPair per route combo from outbound and return lists."""
     best: dict[tuple, FlightPair] = {}
     for out in outbound_flights:
-        if out.arrive_airport not in dest_airports:
-            continue
         for ret in return_flights:
             if ret.depart_airport != out.arrive_airport:
                 continue
@@ -116,9 +105,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     airport_to_city: dict[str, str] = {v: k for k, v in city_codes.items()}
 
     def _resolve(code: str) -> str | None:
-        """Airport code → city name, with fallback for individual airport codes."""
-        city_iata = _AIRPORT_TO_CITY.get(code, code)
-        return airport_to_city.get(city_iata)
+        return airport_to_city.get(code)
 
     origin_cities = [c for c in (_resolve(a) for a in origin_airports) if c]
     dest_cities = [c for c in (_resolve(a) for a in dest_airports) if c]
@@ -147,8 +134,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     return_date = best_date + timedelta(days=state["duration_days"])
     return_flights = await _scrape_details(dest_city, origin_city, return_date, flight_client)
 
-    dest_airport_set = set(dest_airports)
-    flight_pairs = _assemble_flight_pairs(outbound_flights, return_flights, dest_airport_set)
+    flight_pairs = _assemble_flight_pairs(outbound_flights, return_flights)
 
     if not flight_pairs:
         warnings.append("机票数据获取失败，请自行查询各平台")

@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+from typing import Optional
+from json_repair import repair_json
 import litellm
 from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
@@ -33,7 +35,6 @@ async def _phase1_select(pois: list[POI], pairs: list[FlightPair], interests: li
                           user_flight_choice=None, user_poi_prefs=None) -> list[dict]:
     """Phase 1: compressed tables → LLM selects POIs per plan per day."""
     poi_table = _build_poi_table(pois)
-    flight_table = _build_flight_table(pairs)
 
     user_context = ""
     if user_flight_choice:
@@ -41,7 +42,14 @@ async def _phase1_select(pois: list[POI], pairs: list[FlightPair], interests: li
     if user_poi_prefs:
         user_context += f"\nUser POI preferences: {user_poi_prefs}"
 
-    prompt = f"""You are a travel planner. Given the POI list and flight options below, create 2-3 travel plans.
+    if pairs:
+        flight_section = f"Flight pairs:\n{_build_flight_table(pairs)}\n\nFor EACH plan, assign a different FlightPair (use its pair_id)."
+        pair_id_field = '"pair_id": "<uuid>",'
+    else:
+        flight_section = "No flight data available. Set pair_id to null for all plans."
+        pair_id_field = '"pair_id": null,'
+
+    prompt = f"""You are a travel planner. Create 2-3 travel plans.
 
 Interests: {', '.join(interests)}
 Trip duration: {duration_days} days{user_context}
@@ -49,15 +57,12 @@ Trip duration: {duration_days} days{user_context}
 POIs:
 {poi_table}
 
-Flight pairs:
-{flight_table}
-
-For EACH plan, assign a different FlightPair and select appropriate POIs per day (consider entry airport location for day 1).
+{flight_section}
 Return a JSON array of plans:
 [
   {{
     "plan_id": "A",
-    "pair_id": "<uuid>",
+    {pair_id_field}
     "days": [
       {{"day": 1, "poi_ids": ["<poi_id>", ...]}},
       ...
@@ -66,6 +71,7 @@ Return a JSON array of plans:
 ]
 Return only valid JSON, no markdown."""
 
+    logger.info("[llm_input] _phase1_select pois=%d pairs=%d chars=%d\n%s", len(pois), len(pairs), len(prompt), prompt)
     try:
         resp = await litellm.acompletion(
             model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
@@ -75,8 +81,9 @@ Return only valid JSON, no markdown."""
     except Exception:
         logger.exception("LLM call failed in _phase1_select, pois=%d pairs=%d", len(pois), len(pairs))
         raise
+    logger.info("[llm_output] _phase1_select\n%s", resp.choices[0].message.content)
     try:
-        return json.loads(extract_json(resp.choices[0].message.content))
+        return json.loads(repair_json(extract_json(resp.choices[0].message.content)))
     except json.JSONDecodeError:
         logger.error("JSON parse failed in _phase1_select, raw=%r", resp.choices[0].message.content)
         raise
@@ -89,23 +96,31 @@ async def _phase2_generate(
     travel_time_matrix: dict[str, int],
 ) -> ItineraryOption:
     """Phase 2: full objects for selected items → LLM generates detailed day plans."""
-    fp = pair_map[plan_skeleton["pair_id"]]
+    fp: Optional[FlightPair] = pair_map.get(plan_skeleton.get("pair_id"))
     selected_pois = {pid: poi_map[pid] for day in plan_skeleton["days"] for pid in day["poi_ids"] if pid in poi_map}
+    short_to_poi = {pid[:8]: poi for pid, poi in poi_map.items()}
+    selected_short = {pid[:8] for pid in selected_pois}
 
     poi_details = "\n".join(
         f"- {p.name} ({p.category}): {p.desc or 'no description'} | tags: {','.join(p.tags)}"
         for p in selected_pois.values()
     )
     time_notes = "\n".join(
-        f"  {poi_map[a].name if a in poi_map else a} → {poi_map[b].name if b in poi_map else b}: {m} min drive"
+        f"  {short_to_poi[a].name} → {short_to_poi[b].name}: {m} min drive"
         for key, m in travel_time_matrix.items()
         for a, b in [key.split("|", 1)]
-        if a in selected_pois and b in selected_pois
+        if a in selected_short and b in selected_short and a in short_to_poi and b in short_to_poi
+    )
+
+    flight_line = (
+        f"Flight: {fp.outbound.depart_airport}→{fp.outbound.arrive_airport} (outbound) / "
+        f"{fp.return_flight.depart_airport}→{fp.return_flight.arrive_airport} (return)"
+        if fp else "Flight: unavailable, please book separately"
     )
 
     prompt = f"""Generate a detailed travel itinerary for plan {plan_skeleton['plan_id']}.
 
-Flight: {fp.outbound.depart_airport}→{fp.outbound.arrive_airport} (outbound) / {fp.return_flight.depart_airport}→{fp.return_flight.arrive_airport} (return)
+{flight_line}
 
 Selected POIs:
 {poi_details}
@@ -129,6 +144,7 @@ Return JSON:
 }}
 Return only valid JSON, no markdown."""
 
+    logger.info("[llm_input] _phase2_generate plan_id=%r chars=%d\n%s", plan_skeleton.get("plan_id"), len(prompt), prompt)
     try:
         resp = await litellm.acompletion(
             model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
@@ -138,11 +154,12 @@ Return only valid JSON, no markdown."""
     except Exception:
         logger.exception("LLM call failed in _phase2_generate, plan_id=%r", plan_skeleton.get("plan_id"))
         raise
+    logger.info("[llm_output] _phase2_generate plan_id=%r\n%s", plan_skeleton.get("plan_id"), resp.choices[0].message.content)
     try:
-        raw = json.loads(resp.choices[0].message.content)
-    except json.JSONDecodeError:
-        logger.error("JSON parse failed in _phase2_generate, raw=%r", resp.choices[0].message.content)
-        raise
+        raw = json.loads(repair_json(extract_json(resp.choices[0].message.content or "")))
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("JSON parse failed in _phase2_generate plan_id=%r, using fallback", plan_skeleton.get("plan_id"))
+        raw = {}
 
     days = []
     for day_skeleton in plan_skeleton["days"]:
@@ -182,7 +199,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
 
     itineraries = []
     for skeleton in plan_skeletons:
-        if skeleton.get("pair_id") not in pair_map:
+        if pairs and skeleton.get("pair_id") not in pair_map:
             continue
         option = await _phase2_generate(skeleton, poi_map, pair_map, matrix)
         itineraries.append(option)
