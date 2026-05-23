@@ -13,19 +13,40 @@
       >
         <div class="plan-option-id">方案 {{ plan.option_id }}</div>
         <div class="plan-summary">{{ plan.summary }}</div>
-        <div class="plan-flight">
-          <span>✈ 去程 <strong>{{ plan.depart_time || '--:--' }}</strong></span>
-          <span class="flight-route">{{ plan.flight }}</span>
-        </div>
-        <div v-if="plan.return_time" class="plan-flight plan-flight-return">
-          ✈ 返程 <strong>{{ plan.return_time }}</strong>
-        </div>
-        <div class="plan-days">
-          <div v-for="day in plan.days.slice(0, 3)" :key="day.day" class="plan-day">
-            Day {{ day.day }}：{{ day.pois.join(' · ') }}
+
+        <div class="plan-flight-block">
+          <div class="plan-flight-label">✈ 去程</div>
+          <div class="plan-flight-row">
+            <div>
+              <div class="plan-flight-city">出发</div>
+              <div class="plan-flight-time">{{ plan.depart_time || '--:--' }}</div>
+            </div>
+            <div class="plan-flight-arrow">→</div>
+            <div style="text-align:right">
+              <div class="plan-flight-city">到达</div>
+              <div class="plan-flight-time">{{ plan.flight || '' }}</div>
+            </div>
           </div>
-          <div v-if="plan.days.length > 3" class="plan-day">...共 {{ plan.days.length }} 天</div>
         </div>
+
+        <div v-if="plan.return_time" class="plan-flight-block" style="margin-bottom:12px">
+          <div class="plan-flight-label">✈ 返程 {{ plan.return_time }}</div>
+        </div>
+
+        <div class="plan-days-new">
+          <div v-for="day in plan.days.slice(0, 3)" :key="day.day" class="plan-day-row">
+            Day {{ day.day }} · <span>{{ day.pois.join(' · ') }}</span>
+          </div>
+          <div v-if="plan.days.length > 3" class="plan-day-row" style="color:var(--text-muted)">
+            …共 {{ plan.days.length }} 天
+          </div>
+        </div>
+
+        <div class="plan-price">
+          机票 ¥{{ plan.total_price ?? '—' }} <span class="plan-price-label">/ 人</span>
+        </div>
+
+        <div v-if="selected === plan.option_id" class="plan-selected-badge">✓ 已选</div>
       </div>
     </div>
 
@@ -59,8 +80,5 @@ function confirm() {
 </script>
 
 <style scoped>
-.plan-flight { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
-.plan-flight strong { font-size: 15px; color: var(--text-primary); font-weight: 700; }
-.plan-flight-return { margin-bottom: 10px; }
-.flight-route { margin-left: 8px; }
+/* styles moved to style.css */
 </style>
