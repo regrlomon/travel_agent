@@ -77,6 +77,28 @@ async def _llm_build_reply(collected: dict, config=None) -> str:
     return msg.content.strip()
 
 
+async def _llm_generate_tags(destination: str) -> list[str]:
+    prompt = f"""为旅行目的地「{destination}」生成 6-10 个旅行兴趣标签。
+
+要求：
+- 贴合该目的地的特色（地理、文化、活动）
+- 每个标签 2-6 个汉字
+- 返回 JSON 数组，不加任何解释
+
+例如：["自然风光", "徒步", "摄影", "藏族文化", "温泉", "星空观测"]
+
+只返回 JSON 数组。"""
+    llm = get_llm(temperature=0.5)
+    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    try:
+        tags = json.loads(extract_json(msg.content))
+        if isinstance(tags, list):
+            return [str(t) for t in tags if t]
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("[collect_intent] _llm_generate_tags parse failed: %r", msg.content)
+    return []
+
+
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
     tools = config["configurable"]["tools"]
     collected: dict = {}
@@ -102,6 +124,22 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
             "message": reply_text,
         })
         collected = await _llm_extract(user_reply.get("text", ""), collected, config)
+
+    # 动态生成兴趣标签，展示给用户多选
+    candidate_tags = await _llm_generate_tags(collected["destination"])
+    preselected = collected.get("interests", [])
+    user_reply = interrupt({
+        "type":        "select_interests",
+        "message":     "你对哪些感兴趣？选几个帮你优先安排（也可以跳过）",
+        "tags":        candidate_tags,
+        "preselected": preselected,
+    })
+    raw_selection = user_reply.get("text", "").strip()
+    if raw_selection:
+        # Frontend sends "自然风光、徒步、寺庙朝圣" — split directly, no LLM needed
+        selected = [t.strip() for t in raw_selection.replace(",", "、").split("、") if t.strip()]
+        if selected:
+            collected["interests"] = selected
 
     # 选填：出发日期，问一次，用户可跳过
     if not collected.get("depart_date"):

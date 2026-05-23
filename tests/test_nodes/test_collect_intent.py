@@ -105,3 +105,31 @@ async def test_empty_raw_message_triggers_hardcoded_greeting(mocker):
     # Greeting must be hardcoded (deterministic), not LLM-generated
     assert "小Z助手" in first_call["message"]
     assert "搜景点" in first_call["message"] or "帮你" in first_call["message"]
+
+
+@pytest.mark.asyncio
+async def test_llm_generate_tags_returns_list(mocker):
+    mock_msg = MagicMock()
+    mock_msg.content = '["自然风光", "徒步", "寺庙朝圣", "高原摄影"]'
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(return_value=mock_msg)
+    mocker.patch("agent.nodes.collect_intent.get_llm", return_value=mock_llm)
+
+    from agent.nodes.collect_intent import _llm_generate_tags
+    tags = await _llm_generate_tags("川西")
+    assert isinstance(tags, list)
+    assert len(tags) >= 4
+    assert all(isinstance(t, str) for t in tags)
+
+
+@pytest.mark.asyncio
+async def test_llm_generate_tags_falls_back_on_bad_json(mocker):
+    mock_msg = MagicMock()
+    mock_msg.content = "sorry I can't"
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(return_value=mock_msg)
+    mocker.patch("agent.nodes.collect_intent.get_llm", return_value=mock_llm)
+
+    from agent.nodes.collect_intent import _llm_generate_tags
+    tags = await _llm_generate_tags("川西")
+    assert isinstance(tags, list)  # empty list fallback, not exception
