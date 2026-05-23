@@ -121,3 +121,49 @@ def test_resume_plan_idempotent(mocker):
     from worker.tasks import resume_plan
     resume_plan("job1", "user reply", "iid-1")
     mock_r.xadd.assert_not_called()
+
+
+def test_make_node_wrapper_emits_progress(mocker):
+    mock_r = MagicMock()
+    mocker.patch("worker.tasks.r", mock_r)
+    from worker.tasks import make_node_wrapper
+
+    called = []
+
+    async def fake_node(state, config):
+        called.append(True)
+        return {}
+
+    # Simulate the module path that node_wrapper uses
+    fake_node.__module__ = "agent.nodes.discover_pois"
+
+    wrapped = make_node_wrapper("job-test")(fake_node)
+
+    import asyncio
+    asyncio.run(wrapped({}, {}))
+
+    assert called == [True]
+    mock_r.xadd.assert_called_once()
+    data = json.loads(mock_r.xadd.call_args[0][1]["data"])
+    assert data["type"] == "progress"
+    assert data["node"] == "discover_pois"
+    assert "景点" in data["message"]
+
+
+def test_run_plan_emits_error_on_exception(mocker):
+    mock_r = MagicMock()
+    mocker.patch("worker.tasks.r", mock_r)
+
+    async def _boom():
+        raise RuntimeError("test failure")
+
+    mocker.patch("worker.tasks.asyncio.run", side_effect=RuntimeError("test failure"))
+
+    from worker.tasks import run_plan
+    with pytest.raises(RuntimeError):
+        run_plan("job-err", {})
+
+    calls = [json.loads(c[0][1]["data"]) for c in mock_r.xadd.call_args_list]
+    error_calls = [c for c in calls if c.get("type") == "error"]
+    assert len(error_calls) == 1
+    assert "RuntimeError" in error_calls[0]["message"]

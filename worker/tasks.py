@@ -1,4 +1,4 @@
-import asyncio, json, logging, os, uuid
+import asyncio, functools, json, logging, os, uuid
 import redis as _redis
 from langsmith import Client as LangSmithClient
 
@@ -15,6 +15,33 @@ STREAM_KEY = "job:{job_id}:stream"
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 LANGSMITH_DATASET = "travel-agent-traces"
 _ls_client = LangSmithClient()
+
+PROGRESS_MESSAGES = {
+    "parse_input":    "正在解析出行需求...",
+    "discover_pois":  "正在搜索目的地景点...",
+    "scrape_flights": "正在查询航班价格...",
+    "plan_itinerary": "正在规划行程方案（约 1-2 分钟）...",
+    "compose_output": "正在整理最终行程...",
+}
+
+
+def make_node_wrapper(job_id: str):
+    def wrapper(fn):
+        node_name = fn.__module__.split(".")[-1]
+        msg = PROGRESS_MESSAGES.get(node_name)
+
+        @functools.wraps(fn)
+        async def wrapped(state, config):
+            # Only emit for compute nodes (not in PROGRESS_MESSAGES → msg is None).
+            # HITL nodes (collect_intent, human_review) are intentionally absent.
+            # LangGraph checkpointing ensures completed compute nodes never re-run
+            # on resume, so no double-fire risk for this graph topology.
+            if msg:
+                _emit(job_id, {"type": "progress", "node": node_name, "message": msg})
+            return await fn(state, config)
+
+        return wrapped
+    return wrapper
 
 
 def _build_config(job_id: str) -> dict:
@@ -87,13 +114,14 @@ def run_plan(self, job_id: str, initial_state: dict):
     async def _run():
         async with AsyncRedisSaver.from_conn_string(REDIS_URL) as checkpointer:
             await checkpointer.asetup()
-            graph = build_compiled_graph(checkpointer)
+            graph = build_compiled_graph(checkpointer, node_wrapper=make_node_wrapper(job_id))
             return await graph.ainvoke(initial_state, config=_build_config(job_id))
 
     try:
         _handle_result(job_id, asyncio.run(_run()))
-    except Exception:
+    except Exception as exc:
         logger.exception("[job=%s] run_plan failed", job_id)
+        _emit(job_id, {"type": "error", "message": f"规划失败，请稍后重试（{type(exc).__name__}）"})
         raise
 
 
@@ -106,13 +134,14 @@ def resume_plan(self, job_id: str, user_text: str, interrupt_id: str):
     async def _run():
         async with AsyncRedisSaver.from_conn_string(REDIS_URL) as checkpointer:
             await checkpointer.asetup()
-            graph = build_compiled_graph(checkpointer)
+            graph = build_compiled_graph(checkpointer, node_wrapper=make_node_wrapper(job_id))
             return await graph.ainvoke(
                 Command(resume={"text": user_text}), config=_build_config(job_id)
             )
 
     try:
         _handle_result(job_id, asyncio.run(_run()))
-    except Exception:
+    except Exception as exc:
         logger.exception("[job=%s] resume_plan failed", job_id)
+        _emit(job_id, {"type": "error", "message": f"规划失败，请稍后重试（{type(exc).__name__}）"})
         raise
