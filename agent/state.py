@@ -17,6 +17,8 @@ class TravelPlanState(TypedDict, total=False):
 
     # ── Written by collect_intent ───────────────────────────────────────
     origin_airports: list[str]    # already exists in state, now written by collect_intent
+    depart_time_pref: Optional[str]   # 去程时段偏好，自然语言，如 "9点左右"
+    return_time_pref: Optional[str]   # 返程时段偏好，自然语言，如 "下午出发"
 
     # ── Written by human_review (moved to after plan_itinerary) ─────────
     selected_option_id: str | None   # which plan the user chose ("A", "B", etc.)
