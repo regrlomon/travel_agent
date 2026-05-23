@@ -75,13 +75,13 @@ export function useSSE() {
         phase.value = 'progress'
         progressItems.value.push(msg)
       } else if (msg.type === 'flight_found') {
-        streamingFlights.value = msg.data.flights ?? []
-        flightsTotalFound.value = msg.data.total_found ?? 0
+        streamingFlights.value = msg.flights ?? []
+        flightsTotalFound.value = msg.total_found ?? 0
       } else if (msg.type === 'poi_found') {
-        streamingPois.value = msg.data.pois ?? []
-        poisTotalFound.value = msg.data.total_found ?? 0
+        streamingPois.value = msg.pois ?? []
+        poisTotalFound.value = msg.total_found ?? 0
       } else if (msg.type === 'stream_text') {
-        streamText.value += msg.data.token ?? ''
+        streamText.value += msg.token ?? ''
       } else if (msg.type === 'done') {
         finalResult.value = msg.result
         phase.value = 'done'
