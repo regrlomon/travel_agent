@@ -104,14 +104,32 @@ return_time_pref: Optional[str]   # 返程时段偏好，自然语言，如 "下
 
 **新增时段评分排序逻辑：**
 
-在 `_scrape_details` 返回航班列表后，增加评分函数 `_rank_by_time_pref`：
+在 `_scrape_details` 返回航班列表后，增加两个函数：
 
-- 接受 `flights: list[Flight]` 和 `time_pref: str | None`
-- 若 `time_pref` 为 None，原顺序返回
-- 否则，调用 LLM（轻量 prompt）将 `time_pref` 解析为目标时间区间（小时范围），然后对每个航班计算距离分，按升序排列
-- **不做硬过滤**：无匹配时所有航班依然返回，只是排在后面
+**`_parse_time_pref(pref: str | None) -> tuple[int, int] | None`**
 
-去程和返程分别用 `depart_time_pref` 和 `return_time_pref` 调用一次。
+规则映射，将中文时段描述转为 `(after_minute, before_minute)`（从 0 点起的分钟数）：
+
+| 匹配关键词 | 时间窗口 |
+|---|---|
+| 早上 / 上午 | 06:00–12:00 |
+| 下午 | 12:00–18:00 |
+| 晚上 / 傍晚 | 17:00–22:00 |
+| `N点左右` | N±60 分钟 |
+| 不要太早 / 别太早 | after 08:00 |
+| 不要太晚 / 别太晚 | before 20:00 |
+| 随意 / 不限 / 无所谓 / None | 返回 None（不过滤） |
+
+无法匹配时兜底返回 None。不调用 LLM。
+
+**`_rank_by_time_pref(flights: list[Flight], pref: str | None) -> list[Flight]`**
+
+- 调用 `_parse_time_pref` 得到目标窗口
+- 若窗口为 None，原顺序返回
+- 否则对每个航班计算起飞时刻与窗口中点的分钟距离，按升序排列
+- **不做硬过滤**：无匹配航班时全部返回，只是靠前的更接近偏好时段
+
+去程用 `depart_time_pref`、返程用 `return_time_pref` 分别调用一次。
 
 `run()` 从 `state` 读取这两个新字段（可选，缺省 None）。
 
