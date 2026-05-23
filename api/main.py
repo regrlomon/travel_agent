@@ -1,5 +1,5 @@
 import asyncio, json, os, uuid
-from typing import Optional, AsyncGenerator
+from typing import AsyncGenerator
 import redis.asyncio as aioredis
 import redis
 from fastapi import FastAPI, HTTPException
@@ -13,14 +13,7 @@ _async_redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/
 
 
 class PlanRequest(BaseModel):
-    destination: str
-    origin: str
-    duration_days: int
-    travelers: int = 1
-    transport_mode: str = "mixed"
-    difficulty_level: str = "medium"
-    interests: list[str] = []
-    depart_date: Optional[str] = None
+    message: str = ""   # user's first message; empty string triggers AI greeting
 
 
 class ReplyRequest(BaseModel):
@@ -31,7 +24,13 @@ class ReplyRequest(BaseModel):
 @app.post("/plans", status_code=202)
 async def create_plan(req: PlanRequest):
     job_id = str(uuid.uuid4())
-    run_plan.delay(job_id, req.model_dump())
+    initial_state = {
+        "raw_message": req.message,
+        "errors": [],
+        "warnings": [],
+        "job_id": job_id,
+    }
+    run_plan.delay(job_id, initial_state)
     return {"job_id": job_id, "status": "pending"}
 
 

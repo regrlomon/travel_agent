@@ -71,7 +71,7 @@ def test_build_tools_returns_all_keys():
         "xhs": "mock_xhs",
         "flight": "mock_flight",
     })
-    assert set(tools.keys()) == {"amap", "tavily", "xhs", "flight"}
+    assert set(tools.keys()) == {"amap", "tavily", "xhs", "flight", "airports"}
 
 
 def test_build_tools_override_replaces_default():

@@ -17,6 +17,9 @@ def test_graph_has_human_review_node():
 
 @pytest.mark.asyncio
 async def test_graph_runs_with_mocked_nodes(mocker):
+    mocker.patch("agent.nodes.collect_intent.run", new_callable=AsyncMock, return_value={
+        "raw_message": "川西自驾7天", "collected": {},
+    })
     mocker.patch("agent.nodes.parse_input.run", new_callable=AsyncMock, return_value={
         "destination_region": "甘孜州", "destination_amap_cities": ["513300"],
         "destination_airports": ["CTU"], "origin_airports": ["PVG"],
@@ -42,9 +45,7 @@ async def test_graph_runs_with_mocked_nodes(mocker):
     from langgraph.checkpoint.memory import MemorySaver
     graph = build_compiled_graph(MemorySaver())
     result = await graph.ainvoke(
-        {"destination": "川西", "origin": "苏州", "duration_days": 7,
-         "travelers": 2, "transport_mode": "self_drive", "difficulty_level": "medium",
-         "interests": ["徒步"], "depart_date": None, "errors": [], "warnings": [], "job_id": "test"},
+        {"raw_message": "川西自驾7天", "errors": [], "warnings": [], "job_id": "test"},
         config={"configurable": {"thread_id": "test", "tools": {}}},
     )
     assert result is not None

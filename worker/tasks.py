@@ -50,9 +50,7 @@ def _handle_result(job_id: str, result: dict):
 
 
 @celery_app.task(bind=True, max_retries=0)
-def run_plan(self, job_id: str, request_data: dict):
-    initial_state = {**request_data, "errors": [], "warnings": [], "job_id": job_id}
-
+def run_plan(self, job_id: str, initial_state: dict):
     async def _run():
         async with AsyncRedisSaver.from_conn_string(REDIS_URL) as checkpointer:
             await checkpointer.asetup()
