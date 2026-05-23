@@ -9,6 +9,11 @@ export function useSSE() {
   const error = ref(null)
   const confirmData = ref(null)
   const interestsData = ref(null)
+  const streamingFlights = ref([])
+  const streamingPois = ref([])
+  const streamText = ref('')
+  const flightsTotalFound = ref(0)
+  const poisTotalFound = ref(0)
 
   let jobId = null
   let interruptId = null
@@ -22,6 +27,11 @@ export function useSSE() {
     error.value = null
     confirmData.value = null
     interestsData.value = null
+    streamingFlights.value = []
+    streamingPois.value = []
+    streamText.value = ''
+    flightsTotalFound.value = 0
+    poisTotalFound.value = 0
     phase.value = 'chat'
 
     if (userText) {
@@ -64,6 +74,14 @@ export function useSSE() {
       } else if (msg.type === 'progress') {
         phase.value = 'progress'
         progressItems.value.push(msg)
+      } else if (msg.type === 'flight_found') {
+        streamingFlights.value = msg.data.flights ?? []
+        flightsTotalFound.value = msg.data.total_found ?? 0
+      } else if (msg.type === 'poi_found') {
+        streamingPois.value = msg.data.pois ?? []
+        poisTotalFound.value = msg.data.total_found ?? 0
+      } else if (msg.type === 'stream_text') {
+        streamText.value += msg.data.token ?? ''
       } else if (msg.type === 'done') {
         finalResult.value = msg.result
         phase.value = 'done'
@@ -102,6 +120,7 @@ export function useSSE() {
   return {
     phase, messages, progressItems, reviewData, finalResult, error,
     confirmData, interestsData,
+    streamingFlights, streamingPois, streamText, flightsTotalFound, poisTotalFound,
     startChat, sendReply,
   }
 }

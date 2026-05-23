@@ -1,5 +1,9 @@
 <template>
   <div class="view interests-view">
+    <div class="aurora" style="position:absolute;inset:0;z-index:0;pointer-events:none;overflow:hidden">
+      <div class="aurora-blob"></div>
+      <div class="aurora-blob"></div>
+    </div>
     <h2 class="interests-title">{{ data.message }}</h2>
     <p class="interests-sub">点选感兴趣的，也可以直接跳过</p>
 
@@ -15,7 +19,7 @@
       </button>
     </div>
 
-    <div class="input-bar" style="margin-top: auto;">
+    <div class="interests-actions">
       <button class="btn-skip" @click="skip">跳过</button>
       <button class="btn-send" @click="confirm" :disabled="selected.size === 0">
         确认 ({{ selected.size }}) →
@@ -52,56 +56,32 @@ function skip() {
 
 <style scoped>
 .interests-view {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  padding: 24px 16px 16px;
+  display: flex; flex-direction: column;
+  height: 100%; padding: 32px 24px 24px;
+  position: relative; z-index: 2;
 }
+.interests-title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+.interests-sub { font-size: 14px; color: var(--text-secondary); margin-bottom: 24px; }
 
-.interests-title {
-  font-size: 20px;
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-
-.interests-sub {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin-bottom: 20px;
-}
-
-.tag-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  flex: 1;
-  align-content: flex-start;
-}
+.tag-grid { display: flex; flex-wrap: wrap; gap: 10px; flex: 1; align-content: flex-start; max-width: 600px; }
 
 .tag-chip {
-  padding: 8px 16px;
-  border-radius: 20px;
-  border: 1.5px solid var(--border);
-  background: transparent;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 0.15s;
-  color: var(--text-primary);
+  padding: 9px 18px; border-radius: 22px;
+  border: 1px solid var(--border); background: var(--bg-glass);
+  font-size: 14px; color: var(--text-secondary); cursor: pointer; transition: all .2s;
 }
-
+.tag-chip:hover { background: rgba(255,255,255,.1); color: var(--text-primary); }
 .tag-chip.selected {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
+  background: linear-gradient(135deg, rgba(108,59,213,.3), rgba(26,111,235,.3));
+  border-color: rgba(108,59,213,.6); color: #c4b5fd;
+  box-shadow: 0 0 12px rgba(108,59,213,.2);
 }
 
+.interests-actions { display: flex; gap: 10px; margin-top: auto; max-width: 600px; }
 .btn-skip {
-  padding: 11px 16px;
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  cursor: pointer;
+  flex: 1; padding: 13px; border-radius: 12px;
+  border: 1px solid var(--border); background: var(--bg-glass);
+  color: var(--text-secondary); font-size: 14px; cursor: pointer; transition: all .2s;
 }
+.btn-skip:hover { background: rgba(255,255,255,.08); }
 </style>

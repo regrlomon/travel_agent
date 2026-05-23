@@ -38,6 +38,10 @@ def make_node_wrapper(job_id: str):
             # on resume, so no double-fire risk for this graph topology.
             if msg:
                 _emit(job_id, {"type": "progress", "node": node_name, "message": msg})
+            # Inject synchronous emit partial so nodes can emit mid-execution events
+            configurable = dict((config or {}).get("configurable", {}))
+            configurable["progress_emit"] = functools.partial(_emit, job_id)
+            config = {**(config or {}), "configurable": configurable}
             return await fn(state, config)
 
         return wrapped

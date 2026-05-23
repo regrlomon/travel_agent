@@ -282,6 +282,16 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     pois.sort(key=lambda p: ({"high": 0, "medium": 1, "low": 2}[p.confidence], -p.amap_rating))
     pois = pois[:MAX_POIS]
 
+    # Emit top POIs for streaming UI (after dedup and sort, before slow matrix call)
+    emit_fn = (config or {}).get("configurable", {}).get("progress_emit") if config else None
+    if emit_fn and pois:
+        top_names = [p.name for p in pois[:10]]
+        emit_fn({
+            "type": "poi_found",
+            "total_found": len(pois),
+            "pois": top_names,
+        })
+
     # 7. Build travel time matrix (only adjacent pairs ≤50km)
     matrix = await _build_travel_time_matrix(pois, tools=tools)
 
