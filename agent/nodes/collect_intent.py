@@ -99,6 +99,48 @@ async def _llm_generate_tags(destination: str) -> list[str]:
     return []
 
 
+async def _llm_extract_time_prefs(user_text: str) -> tuple[str | None, str | None]:
+    prompt = f"""从用户的消息里提取去程和返程的出发时段偏好。
+
+用户消息："{user_text}"
+
+返回 JSON：
+{{"depart_time_pref": "原文时段描述或 null", "return_time_pref": "原文时段描述或 null"}}
+
+示例输入："去程9点，返程下午随意"
+示例输出：{{"depart_time_pref": "9点左右", "return_time_pref": "下午"}}
+
+如果没有明确说偏好就返回 null。只返回 JSON，不加解释。"""
+    llm = get_llm(temperature=0.1)
+    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    try:
+        data = json.loads(extract_json(msg.content))
+        return data.get("depart_time_pref") or None, data.get("return_time_pref") or None
+    except (json.JSONDecodeError, ValueError):
+        return None, None
+
+
+async def _parse_confirm_reply(user_text: str, current: dict) -> dict:
+    prompt = f"""用户正在确认出行信息。分析用户的回复意图。
+
+当前信息：{json.dumps(current, ensure_ascii=False)}
+用户回复："{user_text}"
+
+返回 JSON：
+{{"action": "confirm" 或 "modify", "updates": {{字段: 新值}} 或 {{}}}}
+
+- 如果用户表示"好的/确认/没问题/可以"之类，action = "confirm"，updates = {{}}
+- 如果用户提到修改任何字段，action = "modify"，updates 里放要改的字段
+
+只返回 JSON。"""
+    llm = get_llm(temperature=0.1)
+    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    try:
+        return json.loads(extract_json(msg.content))
+    except (json.JSONDecodeError, ValueError):
+        return {"action": "confirm", "updates": {}}
+
+
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
     tools = config["configurable"]["tools"]
     collected: dict = {}
@@ -149,13 +191,52 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
         })
         collected = await _llm_extract(user_reply.get("text", ""), collected, config)
 
+    # 选填：去程 + 返程时段偏好
+    time_reply = interrupt({
+        "type": "collect_intent",
+        "message": "去程大概想几点出发？返程呢，比如有些人会想最后一天玩到下午再飞。",
+    })
+    depart_pref, return_pref = await _llm_extract_time_prefs(time_reply.get("text", ""))
+
+    # confirm_intent 循环：直到用户确认
+    while True:
+        summary = {
+            "destination":  collected["destination"],
+            "origin":       collected["origin"],
+            "duration_days": int(collected["duration_days"]),
+            "interests":    collected.get("interests", []),
+        }
+        if collected.get("depart_date"):
+            summary["depart_date"] = collected["depart_date"]
+        if depart_pref:
+            summary["depart_time_pref"] = depart_pref
+        if return_pref:
+            summary["return_time_pref"] = return_pref
+
+        confirm_reply = interrupt({
+            "type":    "confirm_intent",
+            "summary": summary,
+        })
+        parsed = await _parse_confirm_reply(confirm_reply.get("text", ""), summary)
+        if parsed.get("action") == "confirm":
+            break
+        # merge updates and re-loop
+        for k, v in parsed.get("updates", {}).items():
+            if v is not None:
+                collected[k] = v
+        # re-extract time prefs if user mentioned them in update
+        if any(kw in confirm_reply.get("text", "") for kw in ("点", "上午", "下午", "晚上", "早")):
+            depart_pref, return_pref = await _llm_extract_time_prefs(confirm_reply.get("text", ""))
+
     origin_airports = await tools["airports"].lookup(collected["origin"])
 
     return {
-        "destination":    collected["destination"],
-        "origin":         collected["origin"],
-        "duration_days":  int(collected["duration_days"]),
-        "interests":      collected.get("interests", []),
-        "depart_date":    collected.get("depart_date"),
-        "origin_airports": origin_airports,
+        "destination":      collected["destination"],
+        "origin":           collected["origin"],
+        "duration_days":    int(collected["duration_days"]),
+        "interests":        collected.get("interests", []),
+        "depart_date":      collected.get("depart_date"),
+        "depart_time_pref": depart_pref,
+        "return_time_pref": return_pref,
+        "origin_airports":  origin_airports,
     }
