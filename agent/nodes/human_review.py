@@ -1,87 +1,17 @@
-import json, os
+import json
 import logging
-from datetime import datetime
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 from agent.state import TravelPlanState
 from agent import extract_json
 from agent.llm import get_llm
-from models import Flight, FlightPair, DayPlan, POI, ItineraryOption
+from agent.nodes._rebuild import rebuild_itineraries
+from models import ItineraryOption
 
 logger = logging.getLogger(__name__)
 
 
-def _rebuild_flight(f: dict) -> Flight:
-    dt = f["depart_time"]
-    if isinstance(dt, str):
-        dt = datetime.fromisoformat(dt)
-    return Flight(
-        platform=f.get("platform", ""),
-        depart_airport=f.get("depart_airport", ""),
-        arrive_airport=f.get("arrive_airport", ""),
-        price=f.get("price", 0),
-        flight_no=f.get("flight_no", ""),
-        depart_time=dt,
-    )
-
-
-def _rebuild_itineraries(raw: list) -> list[ItineraryOption]:
-    """Reconstruct ItineraryOption dataclasses after Redis checkpoint deserialization."""
-    result = []
-    for item in raw:
-        if not isinstance(item, dict):
-            result.append(item)
-            continue
-
-        fp = None
-        fd = item.get("flights")
-        if isinstance(fd, dict):
-            fp = FlightPair(
-                pair_id=fd.get("pair_id", ""),
-                outbound=_rebuild_flight(fd["outbound"]),
-                return_flight=_rebuild_flight(fd["return_flight"]),
-                total_price=fd.get("total_price", 0),
-            )
-
-        days = []
-        for d in item.get("days", []):
-            if not isinstance(d, dict):
-                days.append(d)
-                continue
-            pois = [
-                POI(
-                    poi_id=p.get("poi_id", ""),
-                    name=p.get("name", ""),
-                    coords=tuple(p.get("coords", [0.0, 0.0])),
-                    category=p.get("category", ""),
-                    tags=p.get("tags", []),
-                    desc=p.get("desc", ""),
-                    amap_rating=p.get("amap_rating", 0.0),
-                    sources=p.get("sources", []),
-                    mention_count=p.get("mention_count", 0),
-                    platform_count=p.get("platform_count", 0),
-                    confidence=p.get("confidence", "low"),
-                ) if isinstance(p, dict) else p
-                for p in d.get("pois", [])
-            ]
-            days.append(DayPlan(
-                day=d.get("day", 0),
-                pois=pois,
-                transport_note=d.get("transport_note", ""),
-                estimated_travel_minutes=d.get("estimated_travel_minutes", 0),
-            ))
-
-        result.append(ItineraryOption(
-            option_id=item.get("option_id", ""),
-            summary=item.get("summary", ""),
-            flights=fp,
-            days=days,
-        ))
-    return result
-
-
 def _format_plans_for_display(itineraries: list[ItineraryOption]) -> list[dict]:
-    """Serialize itineraries into compact summaries for the interrupt payload."""
     plans = []
     for itin in itineraries:
         fp = itin.flights
@@ -93,15 +23,13 @@ def _format_plans_for_display(itineraries: list[ItineraryOption]) -> list[dict]:
             f"{fp.outbound.depart_airport}→{fp.outbound.arrive_airport} ¥{fp.total_price}/人"
             if fp else "待定（请自行查询）"
         )
-        depart_date = (
-            fp.outbound.depart_time.strftime("%Y-%m-%d") if fp else ""
-        )
+        depart_date = fp.outbound.depart_time.strftime("%Y-%m-%d") if fp else ""
         plans.append({
-            "option_id":  itin.option_id,
-            "summary":    itin.summary,
-            "flight":     flight_info,
+            "option_id":   itin.option_id,
+            "summary":     itin.summary,
+            "flight":      flight_info,
             "depart_date": depart_date,
-            "days":       days_summary,
+            "days":        days_summary,
         })
     return plans
 
@@ -117,13 +45,15 @@ Extract:
 
 Return JSON: {{"selected_option_id": "...", "adjustment_notes": "..."}}
 Return only valid JSON, no markdown."""
+    logger.info("[llm_input] _parse_user_reply chars=%d\n%s", len(prompt), prompt)
     llm = get_llm(temperature=0.1)
     resp = await llm.ainvoke([{"role": "user", "content": prompt}])
+    logger.info("[llm_output] _parse_user_reply\n%s", resp.content)
     return json.loads(extract_json(resp.content))
 
 
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
-    itineraries = _rebuild_itineraries(state.get("itineraries", []))
+    itineraries = rebuild_itineraries(state.get("itineraries", []))
     plans = _format_plans_for_display(itineraries)
 
     user_reply = interrupt({
@@ -141,7 +71,6 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
     return {
         "selected_option_id": parsed.get("selected_option_id") or None,
         "adjustment_notes":   parsed.get("adjustment_notes") or None,
-        # keep legacy fields so compose_output doesn't break
         "user_flight_choice": parsed.get("selected_option_id") or None,
         "user_poi_prefs":     parsed.get("adjustment_notes") or None,
     }

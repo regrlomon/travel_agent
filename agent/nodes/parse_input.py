@@ -22,7 +22,7 @@ def _city_to_iata(city: str) -> list[str]:
     return []
 
 
-async def _llm_parse_destination(destination: str, origin: str) -> dict:
+async def _llm_parse_destination(destination: str, origin: str, config=None) -> dict:
     prompt = f"""You are a Chinese travel expert. Given destination "{destination}" departing from "{origin}":
 Return JSON with:
 - region: human-readable string e.g. "甘孜州+阿坝州"
@@ -32,7 +32,7 @@ Return only valid JSON, no markdown."""
     logger.info("[llm_input] _llm_parse_destination chars=%d\n%s", len(prompt), prompt)
     try:
         llm = get_llm(temperature=0.1)
-        msg = await llm.ainvoke([HumanMessage(content=prompt)])
+        msg = await llm.ainvoke([HumanMessage(content=prompt)], config)
     except Exception:
         logger.exception("LLM call failed in _llm_parse_destination, destination=%r origin=%r", destination, origin)
         raise
@@ -53,7 +53,7 @@ def _expand_dates(depart_date: str | None) -> list[date]:
 
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
     tools = config["configurable"]["tools"]
-    parsed = await _llm_parse_destination(state["destination"], state["origin"])
+    parsed = await _llm_parse_destination(state["destination"], state["origin"], config)
 
     code_map = await tools["amap"].get_district_codes(parsed["city_names"])
     amap_cities = list(code_map.values())

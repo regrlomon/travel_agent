@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Literal
 
 from playwright.async_api import async_playwright
+from langsmith import traceable
 
 from .scraper import fetch_ctrip, fetch_ly, CITY_CODES
 
@@ -179,6 +180,7 @@ class FlightClient:
     def city_codes(self) -> dict[str, str]:
         return CITY_CODES
 
+    @traceable(name="flight_search")
     async def search_flights(
         self,
         origin_city: str,

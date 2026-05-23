@@ -2,6 +2,7 @@
 import logging
 
 from agent.state import TravelPlanState
+from agent.nodes._rebuild import rebuild_flight_pairs, rebuild_itineraries
 from models import FlightPair, ItineraryOption
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,8 @@ def run(state: TravelPlanState, config=None) -> dict:
     logger.info("[compose_output] start, pois=%d pairs=%d itineraries=%d",
                 len(state.get("pois", [])), len(state.get("flight_pairs", [])), len(state.get("itineraries", [])))
     pois = state.get("pois", [])
-    flight_pairs = state.get("flight_pairs", [])
-    itineraries = state.get("itineraries", [])
+    flight_pairs = rebuild_flight_pairs(state.get("flight_pairs", []))
+    itineraries = rebuild_itineraries(state.get("itineraries", []))
     warnings = list(state.get("warnings", []))
     errors = state.get("errors", [])
 
@@ -77,7 +78,7 @@ def _serialize_itinerary(opt: ItineraryOption) -> dict:
             "outbound": _serialize_flight(fp.outbound),
             "return_flight": _serialize_flight(fp.return_flight),
             "total_price": fp.total_price,
-        },
+        } if fp else None,
         "days": [
             {
                 "day": d.day,

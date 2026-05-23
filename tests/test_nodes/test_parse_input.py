@@ -38,20 +38,21 @@ async def test_parse_input_respects_existing_origin_airports(mocker):
 
 
 @pytest.mark.asyncio
-async def test_parse_input_fallback_to_llm_airports(mocker):
-    """Test that LLM-parsed airports are used if not in state."""
+async def test_parse_input_fallback_to_static_lookup(mocker):
+    """Test that _city_to_iata static lookup is used if origin_airports not in state."""
     mocker.patch("agent.nodes.parse_input._llm_parse_destination", new_callable=AsyncMock, return_value={
         "region": "甘孜州", "city_names": ["甘孜藏族自治州"],
-        "destination_airports": ["CTU"], "origin_airports": ["PVG"],
+        "destination_airports": ["CTU"],
         "search_keywords": ["川西"],
     })
     mock_amap = MagicMock()
     mock_amap.get_district_codes = AsyncMock(return_value={"甘孜藏族自治州": "513300"})
 
+    # origin "上海" is in CITY_CODES → ["SHA"]; no origin_airports in state
+    state = {**_base_state(), "origin": "上海"}
     from agent.nodes.parse_input import run
-    result = await run(_base_state(), _make_config(mock_amap))
-    # Should use LLM-parsed airports as fallback
-    assert result["origin_airports"] == ["PVG"]
+    result = await run(state, _make_config(mock_amap))
+    assert result["origin_airports"] == ["SHA"]
 
 
 @pytest.mark.asyncio

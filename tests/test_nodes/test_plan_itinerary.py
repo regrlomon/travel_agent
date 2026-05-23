@@ -13,9 +13,9 @@ def make_poi(poi_id, name, confidence="high", tags=None):
 
 def make_pair(pair_id):
     from models import Flight, FlightPair
-    out = Flight("携程", "PVG", "DCY", 980, "MU1", datetime(2026, 7, 1))
-    ret = Flight("携程", "CTU", "PVG", 760, "CA1", datetime(2026, 7, 8))
-    return FlightPair(pair_id, out, ret, 1740)
+    out = Flight(platform="携程", depart_airport="PVG", arrive_airport="DCY", price=980, flight_no="MU1", depart_time=datetime(2026, 7, 1))
+    ret = Flight(platform="携程", depart_airport="CTU", arrive_airport="PVG", price=760, flight_no="CA1", depart_time=datetime(2026, 7, 8))
+    return FlightPair(pair_id=pair_id, outbound=out, return_flight=ret, total_price=1740)
 
 
 def test_build_poi_table():
@@ -47,7 +47,7 @@ async def test_run_returns_itineraries(mocker):
     }'''
     call_count = 0
 
-    async def fake_ainvoke(messages):
+    async def fake_ainvoke(*args, **kwargs):
         nonlocal call_count
         call_count += 1
         m = MagicMock()

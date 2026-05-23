@@ -17,20 +17,18 @@ def make_state():
 def test_assemble_flight_pairs_valid_only():
     from models import Flight
     from datetime import datetime
-    out1 = Flight("ctrip", "PVG", "DCY", 980, "MU1", datetime(2026, 7, 1))
-    out2 = Flight("ctrip", "PVG", "CTU", 650, "MU2", datetime(2026, 7, 1))
-    ret1 = Flight("ctrip", "DCY", "PVG", 760, "CA1", datetime(2026, 7, 8))
-    ret2 = Flight("ctrip", "CTU", "PVG", 600, "CA2", datetime(2026, 7, 8))
-    ret_invalid = Flight("ctrip", "SHA", "PVG", 500, "CA3", datetime(2026, 7, 8))  # SHA not in dest_airports
+    out1 = Flight(platform="ctrip", depart_airport="PVG", arrive_airport="DCY", price=980, flight_no="MU1", depart_time=datetime(2026, 7, 1))
+    out2 = Flight(platform="ctrip", depart_airport="PVG", arrive_airport="CTU", price=650, flight_no="MU2", depart_time=datetime(2026, 7, 1))
+    ret1 = Flight(platform="ctrip", depart_airport="DCY", arrive_airport="PVG", price=760, flight_no="CA1", depart_time=datetime(2026, 7, 8))
+    ret2 = Flight(platform="ctrip", depart_airport="CTU", arrive_airport="PVG", price=600, flight_no="CA2", depart_time=datetime(2026, 7, 8))
+    ret_invalid = Flight(platform="ctrip", depart_airport="SHA", arrive_airport="PVG", price=500, flight_no="CA3", depart_time=datetime(2026, 7, 8))  # SHA不匹配任何出发地
 
-    dest_airports = {"DCY", "CTU"}
-    pairs = _assemble_flight_pairs([out1, out2], [ret1, ret2, ret_invalid], dest_airports)
+    pairs = _assemble_flight_pairs([out1, out2], [ret1, ret2, ret_invalid])
 
-    # Only pairs where both outbound.arrive and return.depart are in dest_airports
+    # Only pairs where ret.depart_airport == out.arrive_airport
     for p in pairs:
-        assert p.outbound.arrive_airport in dest_airports
-        assert p.return_flight.depart_airport in dest_airports
-    assert len(pairs) == 2  # out1+ret1, out2+ret2 (cheapest per combo)
+        assert p.return_flight.depart_airport == p.outbound.arrive_airport
+    assert len(pairs) == 2  # out1+ret1, out2+ret2
     assert all(p.pair_id for p in pairs)  # UUID assigned
 
 

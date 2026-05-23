@@ -1,9 +1,13 @@
 import json
+import logging
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 from agent.state import TravelPlanState
+from agent import extract_json
 from agent.llm import get_llm
+
+logger = logging.getLogger(__name__)
 
 
 def _is_complete(collected: dict) -> bool:
@@ -14,7 +18,7 @@ def _is_complete(collected: dict) -> bool:
     )
 
 
-async def _llm_extract(user_text: str, current: dict) -> dict:
+async def _llm_extract(user_text: str, current: dict, config=None) -> dict:
     prompt = f"""You are helping collect travel intent. Extract any travel info from the user message.
 
 Current collected info: {json.dumps(current, ensure_ascii=False)}
@@ -28,9 +32,16 @@ Extract and return JSON with these keys (only include keys mentioned in message,
 - depart_date: string ISO date or null
 
 Return only valid JSON, no markdown."""
+    logger.info("[llm_input] _llm_extract chars=%d\n%s", len(prompt), prompt)
     llm = get_llm(temperature=0.1)
-    msg = await llm.ainvoke([HumanMessage(content=prompt)])
-    extracted = json.loads(msg.content)
+    msg = await llm.ainvoke([HumanMessage(content=prompt)], config)
+    content = msg.content if isinstance(msg.content, str) else ""
+    logger.info("[llm_output] _llm_extract\n%s", content)
+    try:
+        extracted = json.loads(extract_json(content))
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("[llm_extract] JSON parse failed, returning current: %r", content)
+        return {**current}
     merged = {**current}
     for k, v in extracted.items():
         if v is not None and v != [] and v != "":
@@ -38,7 +49,7 @@ Return only valid JSON, no markdown."""
     return merged
 
 
-async def _llm_build_reply(collected: dict) -> str:
+async def _llm_build_reply(collected: dict, config=None) -> str:
     missing = []
     if not collected.get("destination"):
         missing.append("目的地")
@@ -47,19 +58,22 @@ async def _llm_build_reply(collected: dict) -> str:
     if not collected.get("duration_days"):
         missing.append("出行天数")
 
-    prompt = f"""You are a friendly Chinese travel assistant. The user wants to plan a trip.
+    prompt = f"""你是一个帮用户规划旅行的助手，现在需要向用户问缺少的信息。
 
-Already collected: {json.dumps(collected, ensure_ascii=False)}
-Still need: {missing}
+已知信息：{json.dumps(collected, ensure_ascii=False)}
+还需要问：{missing}
 
-Write ONE natural, warm reply in Chinese that:
-1. Acknowledges what you already know (if anything)
-2. Asks for the missing info in a conversational way (can ask multiple things in one sentence)
-3. If destination is vague or unknown, offer 2-3 suggestions based on the style mentioned
+写一句中文问句，风格要求：
+- 像朋友发微信，直接问，不废话
+- 禁止：太棒了、不错哦、好的呢、超级、魅力、波浪号（～）、感叹号堆叠
+- 禁止句首加任何感叹词或捧场词
+- 如果已知目的地，直接用它；如果目的地模糊，顺带提1-2个具体地方供参考
+- 可以在一句话里问多个缺失项
+- 不超过30字
 
-Keep it under 60 characters. Be friendly, not robotic. No bullet points."""
+只输出那一句话，不加任何解释。"""
     llm = get_llm(temperature=0.7)
-    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    msg = await llm.ainvoke([HumanMessage(content=prompt)], config)
     return msg.content.strip()
 
 
@@ -69,23 +83,23 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
 
     raw = state.get("raw_message", "")
     if raw:
-        collected = await _llm_extract(raw, collected)
+        collected = await _llm_extract(raw, collected, config)
 
     while not _is_complete(collected):
-        reply_text = await _llm_build_reply(collected)
+        reply_text = await _llm_build_reply(collected, config)
         user_reply = interrupt({
             "type": "collect_intent",
             "message": reply_text,
         })
-        collected = await _llm_extract(user_reply.get("text", ""), collected)
+        collected = await _llm_extract(user_reply.get("text", ""), collected, config)
 
     # 选填：出发日期，问一次，用户可跳过
     if not collected.get("depart_date"):
         user_reply = interrupt({
             "type": "collect_intent",
-            "message": "什么时候出发呀？不确定的话我帮你查最近7天最便宜的～",
+            "message": "出发时间定了吗？没定的话我帮你查最近7天哪天最便宜。",
         })
-        collected = await _llm_extract(user_reply.get("text", ""), collected)
+        collected = await _llm_extract(user_reply.get("text", ""), collected, config)
 
     origin_airports = await tools["airports"].lookup(collected["origin"])
 

@@ -1,5 +1,6 @@
 import asyncio, json, logging, os, uuid
 import redis as _redis
+from langchain_core.tracers.langchain import LangChainTracer
 from langsmith import Client as LangSmithClient
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,8 @@ _ls_client = LangSmithClient()
 def _build_config(job_id: str) -> dict:
     return {
         "configurable": {"thread_id": job_id, "tools": build_tools()},
+        "run_name": f"travel_plan/{job_id}",
+        "callbacks": [LangChainTracer()],
         "metadata": {"job_id": job_id},
         "tags": [os.getenv("LANGCHAIN_TAGS", "env:dev")],
     }
@@ -58,7 +61,6 @@ def _auto_add_to_dataset(job_id: str, result: dict):
 
 
 def _handle_result(job_id: str, result: dict):
-    logger.info("[job=%s] LLM result: %s", job_id, json.dumps(result, ensure_ascii=False, default=str))
     interrupts = result.get("__interrupt__")
     if interrupts:
         interrupt_id = str(uuid.uuid4())
@@ -90,7 +92,11 @@ def run_plan(self, job_id: str, initial_state: dict):
             graph = build_compiled_graph(checkpointer)
             return await graph.ainvoke(initial_state, config=_build_config(job_id))
 
-    _handle_result(job_id, asyncio.run(_run()))
+    try:
+        _handle_result(job_id, asyncio.run(_run()))
+    except Exception:
+        logger.exception("[job=%s] run_plan failed", job_id)
+        raise
 
 
 @celery_app.task(bind=True, max_retries=1)
@@ -107,4 +113,8 @@ def resume_plan(self, job_id: str, user_text: str, interrupt_id: str):
                 Command(resume={"text": user_text}), config=_build_config(job_id)
             )
 
-    _handle_result(job_id, asyncio.run(_run()))
+    try:
+        _handle_result(job_id, asyncio.run(_run()))
+    except Exception:
+        logger.exception("[job=%s] resume_plan failed", job_id)
+        raise

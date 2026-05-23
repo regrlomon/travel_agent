@@ -1,5 +1,6 @@
 import httpx
 from typing import Optional
+from langsmith import traceable
 
 AMAP_BASE = "https://restapi.amap.com/v3"
 
@@ -45,6 +46,38 @@ async def search_pois(
             if data.get("status") == "1":
                 all_pois.extend(data.get("pois", []))
     return all_pois
+
+
+async def get_driving_time_batch(
+    origins: list[tuple[float, float]],
+    dest: tuple[float, float],
+    api_key: str,
+) -> list[Optional[int]]:
+    """Return driving times (minutes) from multiple origins to one destination.
+    Uses /v3/distance which accepts up to 100 origin points per call.
+    Returns list aligned with origins; None on individual failure.
+    """
+    if not origins:
+        return []
+    origins_str = "|".join(f"{lng},{lat}" for lat, lng in origins)
+    dest_str = f"{dest[1]},{dest[0]}"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{AMAP_BASE}/distance",
+            params={"origins": origins_str, "destination": dest_str, "type": "1", "key": api_key},
+        )
+        data = resp.json()
+    if data.get("status") != "1":
+        return [None] * len(origins)
+    results = data.get("results", [])
+    out: list[Optional[int]] = []
+    for item in results:
+        duration = item.get("duration")
+        out.append(int(duration) // 60 if duration is not None else None)
+    # pad in case API returns fewer results than origins
+    while len(out) < len(origins):
+        out.append(None)
+    return out
 
 
 async def get_driving_time(
@@ -98,8 +131,13 @@ class AmapClient:
     async def get_district_codes(self, city_names: list[str]) -> dict[str, str]:
         return await get_district_codes(city_names, api_key=self.api_key)
 
+    @traceable(name="amap_search_pois")
     async def search_pois(self, city_codes: list[str], keywords: str = "景点") -> list[dict]:
         return await search_pois(city_codes, keywords, api_key=self.api_key)
+
+    @traceable(name="amap_driving_time_batch")
+    async def get_driving_time_batch(self, origins: list[tuple], dest: tuple) -> "list[int | None]":
+        return await get_driving_time_batch(origins, dest, api_key=self.api_key)
 
     async def get_driving_time(self, origin: tuple, dest: tuple) -> "int | None":
         return await get_driving_time(origin, dest, api_key=self.api_key)

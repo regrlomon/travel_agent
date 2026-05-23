@@ -9,15 +9,18 @@ import agent.nodes.human_review   as human_review
 import agent.nodes.compose_output as compose_output
 
 
-def build_compiled_graph(checkpointer):
+def build_compiled_graph(checkpointer=None, node_wrapper=None):
+    def _w(fn):
+        return node_wrapper(fn) if node_wrapper else fn
+
     g = StateGraph(TravelPlanState)
-    g.add_node("collect_intent", collect_intent.run)
-    g.add_node("parse_input",    parse_input.run)
-    g.add_node("discover_pois",  discover_pois.run)
-    g.add_node("scrape_flights", scrape_flights.run)
-    g.add_node("plan_itinerary", plan_itinerary.run)
-    g.add_node("human_review",   human_review.run)
-    g.add_node("compose_output", compose_output.run)
+    g.add_node("collect_intent", _w(collect_intent.run))
+    g.add_node("parse_input",    _w(parse_input.run))
+    g.add_node("discover_pois",  _w(discover_pois.run))
+    g.add_node("scrape_flights", _w(scrape_flights.run))
+    g.add_node("plan_itinerary", _w(plan_itinerary.run))
+    g.add_node("human_review",   _w(human_review.run))
+    g.add_node("compose_output", _w(compose_output.run))
 
     g.set_entry_point("collect_intent")
     g.add_edge("collect_intent", "parse_input")

@@ -11,12 +11,12 @@ def _make_config():
 
 def _make_itinerary():
     """Create a sample ItineraryOption for testing."""
-    out = Flight("ctrip", "PVG", "DCY", 980, "MU1", datetime(2026, 7, 1))
-    ret = Flight("ctrip", "DCY", "PVG", 760, "CA1", datetime(2026, 7, 8))
-    fp = FlightPair("uuid-1", out, ret, 1740)
+    out = Flight(platform="ctrip", depart_airport="PVG", arrive_airport="DCY", price=980, flight_no="MU1", depart_time=datetime(2026, 7, 1))
+    ret = Flight(platform="ctrip", depart_airport="DCY", arrive_airport="PVG", price=760, flight_no="CA1", depart_time=datetime(2026, 7, 8))
+    fp = FlightPair(pair_id="uuid-1", outbound=out, return_flight=ret, total_price=1740)
 
-    poi1 = POI("p1", "稻城亚丁", (28.67, 100.3), "自然", [], "desc", 4.9, [], 3, 2, "high")
-    poi2 = POI("p2", "贡嘎山", (29.6, 101.8), "自然", [], "desc", 4.8, [], 5, 3, "high")
+    poi1 = POI(poi_id="p1", name="稻城亚丁", coords=(28.67, 100.3), category="自然", tags=[], desc="desc", amap_rating=4.9, sources=[], mention_count=3, platform_count=2, confidence="high")
+    poi2 = POI(poi_id="p2", name="贡嘎山", coords=(29.6, 101.8), category="自然", tags=[], desc="desc", amap_rating=4.8, sources=[], mention_count=5, platform_count=3, confidence="high")
 
     day1 = DayPlan(day=1, pois=[poi1], transport_note="飞行 + 休整", estimated_travel_minutes=0)
     day2 = DayPlan(day=2, pois=[poi2], transport_note="游览景区", estimated_travel_minutes=55)

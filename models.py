@@ -1,60 +1,54 @@
-from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
+from pydantic import BaseModel
 
 
-@dataclass
-class POISource:
-    platform: str               # "xiaohongshu" | "mafengwo" | "qyer"
+class POISource(BaseModel):
+    platform: str
     mention_count: int
-    llm_credibility: float      # 0-1; low = ad-like content
-    has_negative_reviews: bool  # True = more trustworthy
+    llm_credibility: float
+    has_negative_reviews: bool
 
 
-@dataclass
-class POI:
+class POI(BaseModel):
     poi_id: str
     name: str
-    coords: tuple[float, float]     # (lat, lng)
+    coords: tuple[float, float]
     category: str
-    tags: list[str]                 # LLM-inferred from description, e.g. ["旅拍", "徒步"]
+    tags: list[str] = []
     desc: str
     amap_rating: float
-    sources: list[POISource]
-    mention_count: int              # total across all platforms
+    sources: list[POISource] = []
+    mention_count: int
     platform_count: int
-    confidence: str                 # "high" | "medium" | "low"
+    confidence: str
 
 
-@dataclass
-class Flight:
+class Flight(BaseModel):
     platform: str
     depart_airport: str
     arrive_airport: str
-    price: int                      # CNY, one-way per person
+    price: int
     flight_no: str
     depart_time: datetime
 
 
-@dataclass
-class FlightPair:
-    pair_id: str                    # UUID
+class FlightPair(BaseModel):
+    pair_id: str
     outbound: Flight
     return_flight: Flight
-    total_price: int                # outbound + return per person; actual cost = total_price × travelers
+    total_price: int
 
 
-@dataclass
-class DayPlan:
+class DayPlan(BaseModel):
     day: int
-    pois: list[POI]
-    transport_note: str             # grounded in 高德 API data; LLM only formats wording
+    pois: list[POI] = []
+    transport_note: str
     estimated_travel_minutes: int
 
 
-@dataclass
-class ItineraryOption:
+class ItineraryOption(BaseModel):
     option_id: str
     summary: str
-    flights: Optional[FlightPair]
-    days: list[DayPlan]
+    flights: Optional[FlightPair] = None
+    days: list[DayPlan] = []

@@ -1,6 +1,7 @@
-import json, os
-import litellm
+import json
+from langchain_core.messages import HumanMessage
 from tools.flight_tool.scraper import CITY_CODES
+from agent.llm import get_llm
 
 # city name → city-level IATA (与 flight scraper 保持一致)
 AIRPORT_MAP: dict[str, str] = {
@@ -40,9 +41,6 @@ class AirportsClient:
             f'For example: 北京→BJS, 上海→SHA, 成都→CTU. '
             f'Return only a JSON array with one code, no markdown. Example: ["CTU"]'
         )
-        resp = await litellm.acompletion(
-            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-        )
-        return json.loads(resp.choices[0].message.content)
+        llm = get_llm(temperature=0.0)
+        msg = await llm.ainvoke([HumanMessage(content=prompt)])
+        return json.loads(msg.content)

@@ -115,7 +115,7 @@ async def _fetch_article_pois(keywords: list[str], tools: dict | None = None) ->
     return results
 
 
-async def _score_sources_batch(articles: list[dict]) -> dict[str, dict]:
+async def _score_sources_batch(articles: list[dict], config=None) -> dict[str, dict]:
     """Batch-score all articles in one LLM call. Returns {article_index: {credibility, has_negative, pois}}."""
     if not articles:
         return {}
@@ -135,7 +135,7 @@ Articles:
 Return only a JSON array, no markdown."""
     try:
         llm = get_llm(temperature=0.1)
-        resp = await llm.ainvoke([{"role": "user", "content": prompt}])
+        resp = await llm.ainvoke([{"role": "user", "content": prompt}], config)
         content = resp.content
     except Exception:
         logger.exception("LLM call failed in _score_sources_batch, articles_count=%d", len(articles))
@@ -150,24 +150,44 @@ Return only a JSON array, no markdown."""
 
 
 async def _build_travel_time_matrix(pois: list[POI], tools: dict | None = None) -> dict[str, int]:
-    """Compute driving times only for POI pairs within MAX_MATRIX_DISTANCE_KM."""
+    """Compute driving times using batch API: one concurrent request per destination POI.
+    Reduces API calls from O(n²) individual calls to O(n) concurrent batch calls.
+    """
+    # Build work list: (dest_index, [(origin_index, origin_poi)])
+    work = []
+    for j, dest in enumerate(pois):
+        close_origins = [
+            (i, pois[i])
+            for i in range(j)
+            if _haversine_km(pois[i].coords, dest.coords) <= MAX_MATRIX_DISTANCE_KM
+        ]
+        if close_origins:
+            work.append((j, dest, close_origins))
+
+    if not work:
+        return {}
+
+    async def fetch_one(dest, origins_with_idx):
+        coords = [poi.coords for _, poi in origins_with_idx]
+        try:
+            if tools is not None:
+                return await tools["amap"].get_driving_time_batch(coords, dest.coords)
+            else:
+                from tools.amap import get_driving_time_batch
+                return await get_driving_time_batch(coords, dest.coords, api_key=os.getenv("AMAP_API_KEY", ""))
+        except Exception:
+            logger.exception("高德 get_driving_time_batch failed, dest=%r", dest.poi_id)
+            return [None] * len(origins_with_idx)
+
+    results = await asyncio.gather(*[fetch_one(dest, origins) for _, dest, origins in work])
+
     matrix: dict[str, int] = {}
-    for i, a in enumerate(pois):
-        for j, b in enumerate(pois):
-            if i >= j:
-                continue
-            if _haversine_km(a.coords, b.coords) <= MAX_MATRIX_DISTANCE_KM:
-                if tools is not None:
-                    try:
-                        minutes = await tools["amap"].get_driving_time(a.coords, b.coords)
-                    except Exception:
-                        logger.exception("高德 get_driving_time failed, a=%r b=%r", a.poi_id, b.poi_id)
-                        minutes = None
-                else:
-                    from tools.amap import get_driving_time
-                    minutes = await get_driving_time(a.coords, b.coords, api_key=os.getenv("AMAP_API_KEY", ""))
-                if minutes is not None:
-                    matrix[f"{a.poi_id[:8]}|{b.poi_id[:8]}"] = minutes
+    for (_, dest, origins_with_idx), times in zip(work, results):
+        for (_, origin), minutes in zip(origins_with_idx, times):
+            if minutes is not None:
+                matrix[f"{origin.poi_id[:8]}|{dest.poi_id[:8]}"] = minutes
+
+    logger.info("[travel_time_matrix] %d pairs via %d concurrent batch calls", len(matrix), len(work))
     return matrix
 
 
@@ -182,7 +202,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
 
     # 2. Fetch articles; score and extract POI names in one LLM batch call
     articles = await _fetch_article_pois(keywords, tools=tools)
-    scores = await _score_sources_batch(articles)
+    scores = await _score_sources_batch(articles, config)
 
     # 3. Build POI objects from 高德 data
     pois: list[POI] = []

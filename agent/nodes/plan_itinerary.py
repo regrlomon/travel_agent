@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Optional
+from json_repair import repair_json
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
@@ -31,7 +32,7 @@ def _build_flight_table(pairs: list[FlightPair]) -> str:
 
 
 async def _phase1_select(pois: list[POI], pairs: list[FlightPair], interests: list[str], duration_days: int,
-                          user_flight_choice=None, user_poi_prefs=None) -> list[dict]:
+                          user_flight_choice=None, user_poi_prefs=None, config=None) -> list[dict]:
     poi_table = _build_poi_table(pois)
 
     user_context = ""
@@ -72,13 +73,13 @@ Return only valid JSON, no markdown."""
     logger.info("[llm_input] _phase1_select pois=%d pairs=%d chars=%d\n%s", len(pois), len(pairs), len(prompt), prompt)
     try:
         llm = get_llm(temperature=0.3)
-        msg = await llm.ainvoke([HumanMessage(content=prompt)])
+        msg = await llm.ainvoke([HumanMessage(content=prompt)], config)
     except Exception:
         logger.exception("LLM call failed in _phase1_select, pois=%d pairs=%d", len(pois), len(pairs))
         raise
     logger.info("[llm_output] _phase1_select\n%s", msg.content)
     try:
-        return json.loads(extract_json(msg.content))
+        return json.loads(repair_json(extract_json(msg.content)))
     except json.JSONDecodeError:
         logger.error("JSON parse failed in _phase1_select, raw=%r", msg.content)
         raise
@@ -89,6 +90,7 @@ async def _phase2_generate(
     poi_map: dict[str, POI],
     pair_map: dict[str, FlightPair],
     travel_time_matrix: dict[str, int],
+    config=None,
 ) -> ItineraryOption:
     fp: Optional[FlightPair] = pair_map.get(plan_skeleton.get("pair_id"))
     selected_pois = {pid: poi_map[pid] for day in plan_skeleton["days"] for pid in day["poi_ids"] if pid in poi_map}
@@ -141,16 +143,16 @@ Return only valid JSON, no markdown."""
     logger.info("[llm_input] _phase2_generate plan_id=%r chars=%d\n%s", plan_skeleton.get("plan_id"), len(prompt), prompt)
     try:
         llm = get_llm(temperature=0.2)
-        msg = await llm.ainvoke([HumanMessage(content=prompt)])
+        msg = await llm.ainvoke([HumanMessage(content=prompt)], config)
     except Exception:
         logger.exception("LLM call failed in _phase2_generate, plan_id=%r", plan_skeleton.get("plan_id"))
         raise
     logger.info("[llm_output] _phase2_generate plan_id=%r\n%s", plan_skeleton.get("plan_id"), msg.content)
     try:
-        raw = json.loads(extract_json(msg.content))
-    except json.JSONDecodeError:
-        logger.error("JSON parse failed in _phase2_generate, raw=%r", msg.content)
-        raise
+        raw = json.loads(repair_json(extract_json(msg.content or "")))
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("JSON parse failed in _phase2_generate plan_id=%r, using fallback", plan_skeleton.get("plan_id"))
+        raw = {}
 
     days = []
     for day_skeleton in plan_skeleton["days"]:
@@ -185,14 +187,14 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     pair_map = {fp.pair_id: fp for fp in pairs}
 
     plan_skeletons = await _phase1_select(
-        pois, pairs, interests, duration_days, user_flight_choice, user_poi_prefs
+        pois, pairs, interests, duration_days, user_flight_choice, user_poi_prefs, config=config
     )
 
     itineraries = []
     for skeleton in plan_skeletons:
         if pairs and skeleton.get("pair_id") not in pair_map:
             continue
-        option = await _phase2_generate(skeleton, poi_map, pair_map, matrix)
+        option = await _phase2_generate(skeleton, poi_map, pair_map, matrix, config=config)
         itineraries.append(option)
 
     logger.info("[plan_itinerary] done, itineraries=%d", len(itineraries))

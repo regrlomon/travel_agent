@@ -19,9 +19,9 @@ def make_state():
 
 def test_dedup_pois_merges_nearby():
     from models import POI, POISource
-    src = POISource("xiaohongshu", 1, 0.8, True)
-    p1 = POI("id1", "稻城亚丁", (28.670, 100.300), "自然", [], "desc", 4.9, [src], 1, 1, "medium")
-    p2 = POI("id2", "稻城亚丁景区", (28.671, 100.301), "自然", [], "desc2", 4.8, [src], 1, 1, "medium")
+    src = POISource(platform="xiaohongshu", mention_count=1, llm_credibility=0.8, has_negative_reviews=True)
+    p1 = POI(poi_id="id1", name="稻城亚丁", coords=(28.670, 100.300), category="自然", tags=[], desc="desc", amap_rating=4.9, sources=[src], mention_count=1, platform_count=1, confidence="medium")
+    p2 = POI(poi_id="id2", name="稻城亚丁景区", coords=(28.671, 100.301), category="自然", tags=[], desc="desc2", amap_rating=4.8, sources=[src], mention_count=1, platform_count=1, confidence="medium")
     result = _dedup_pois([p1, p2])
     assert len(result) == 1
     assert result[0].mention_count == 2
