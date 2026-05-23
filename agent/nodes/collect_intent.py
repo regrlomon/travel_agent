@@ -77,7 +77,7 @@ async def _llm_build_reply(collected: dict, config=None) -> str:
     return msg.content.strip()
 
 
-async def _llm_generate_tags(destination: str) -> list[str]:
+async def _llm_generate_tags(destination: str, config=None) -> list[str]:
     prompt = f"""为旅行目的地「{destination}」生成 6-10 个旅行兴趣标签。
 
 要求：
@@ -89,7 +89,7 @@ async def _llm_generate_tags(destination: str) -> list[str]:
 
 只返回 JSON 数组。"""
     llm = get_llm(temperature=0.5)
-    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    msg = await llm.ainvoke([HumanMessage(content=prompt)], config=config)
     try:
         tags = json.loads(extract_json(msg.content))
         if isinstance(tags, list):
@@ -99,7 +99,7 @@ async def _llm_generate_tags(destination: str) -> list[str]:
     return []
 
 
-async def _llm_extract_time_prefs(user_text: str) -> tuple[str | None, str | None]:
+async def _llm_extract_time_prefs(user_text: str, config=None) -> tuple[str | None, str | None]:
     prompt = f"""从用户的消息里提取去程和返程的出发时段偏好。
 
 用户消息："{user_text}"
@@ -112,7 +112,7 @@ async def _llm_extract_time_prefs(user_text: str) -> tuple[str | None, str | Non
 
 如果没有明确说偏好就返回 null。只返回 JSON，不加解释。"""
     llm = get_llm(temperature=0.1)
-    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    msg = await llm.ainvoke([HumanMessage(content=prompt)], config=config)
     try:
         data = json.loads(extract_json(msg.content))
         return data.get("depart_time_pref") or None, data.get("return_time_pref") or None
@@ -120,7 +120,7 @@ async def _llm_extract_time_prefs(user_text: str) -> tuple[str | None, str | Non
         return None, None
 
 
-async def _parse_confirm_reply(user_text: str, current: dict) -> dict:
+async def _parse_confirm_reply(user_text: str, current: dict, config=None) -> dict:
     prompt = f"""用户正在确认出行信息。分析用户的回复意图。
 
 当前信息：{json.dumps(current, ensure_ascii=False)}
@@ -134,7 +134,7 @@ async def _parse_confirm_reply(user_text: str, current: dict) -> dict:
 
 只返回 JSON。"""
     llm = get_llm(temperature=0.1)
-    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    msg = await llm.ainvoke([HumanMessage(content=prompt)], config=config)
     try:
         return json.loads(extract_json(msg.content))
     except (json.JSONDecodeError, ValueError):
@@ -168,7 +168,7 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
         collected = await _llm_extract(user_reply.get("text", ""), collected, config)
 
     # 动态生成兴趣标签，展示给用户多选
-    candidate_tags = await _llm_generate_tags(collected["destination"])
+    candidate_tags = await _llm_generate_tags(collected["destination"], config=config)
     preselected = collected.get("interests", [])
     user_reply = interrupt({
         "type":        "select_interests",
@@ -196,7 +196,7 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
         "type": "collect_intent",
         "message": "去程大概想几点出发？返程呢，比如有些人会想最后一天玩到下午再飞。",
     })
-    depart_pref, return_pref = await _llm_extract_time_prefs(time_reply.get("text", ""))
+    depart_pref, return_pref = await _llm_extract_time_prefs(time_reply.get("text", ""), config=config)
 
     # confirm_intent 循环：直到用户确认（最多 5 轮）
     _confirm_rounds = 0
@@ -219,7 +219,7 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
             "type":    "confirm_intent",
             "summary": summary,
         })
-        parsed = await _parse_confirm_reply(confirm_reply.get("text", ""), summary)
+        parsed = await _parse_confirm_reply(confirm_reply.get("text", ""), summary, config=config)
         if parsed.get("action") == "confirm":
             break
         # merge updates and re-loop
