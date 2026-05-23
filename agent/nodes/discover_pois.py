@@ -6,10 +6,10 @@ import math
 import os
 import uuid
 from typing import Optional
-import litellm
 from langchain_core.runnables import RunnableConfig
 from agent.state import TravelPlanState
 from agent import extract_json
+from agent.llm import get_llm
 from models import POI, POISource
 
 logger = logging.getLogger(__name__)
@@ -109,20 +109,17 @@ Articles:
 {batch_text}
 
 Return only a JSON array, no markdown."""
-    # raises: litellm.APIConnectionError / AuthenticationError / RateLimitError
     try:
-        resp = await litellm.acompletion(
-            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-        )
+        llm = get_llm(temperature=0.1)
+        resp = await llm.ainvoke([{"role": "user", "content": prompt}])
+        content = resp.content
     except Exception:
         logger.exception("LLM call failed in _score_sources_batch, articles_count=%d", len(articles))
         raise
     try:
-        scored = json.loads(extract_json(resp.choices[0].message.content))
+        scored = json.loads(extract_json(content))
     except json.JSONDecodeError:
-        logger.error("JSON parse failed in _score_sources_batch, raw=%r", resp.choices[0].message.content)
+        logger.error("JSON parse failed in _score_sources_batch, raw=%r", content)
         raise
     return {str(item["index"]): item for item in scored}
 

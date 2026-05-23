@@ -1,8 +1,8 @@
 import json, os
-import litellm
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 from agent.state import TravelPlanState
+from agent.llm import get_llm
 
 
 def _format_plans_for_display(itineraries: list) -> list[dict]:
@@ -35,12 +35,9 @@ Extract:
 
 Return JSON: {{"selected_option_id": "...", "adjustment_notes": "..."}}
 Return only valid JSON, no markdown."""
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    return json.loads(resp.choices[0].message.content)
+    llm = get_llm(temperature=0.1)
+    resp = await llm.ainvoke([{"role": "user", "content": prompt}])
+    return json.loads(resp.content)
 
 
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
