@@ -1,6 +1,5 @@
 import asyncio, json, logging, os, uuid
 import redis as _redis
-from langchain_core.tracers.langchain import LangChainTracer
 from langsmith import Client as LangSmithClient
 
 logger = logging.getLogger(__name__)
@@ -22,7 +21,6 @@ def _build_config(job_id: str) -> dict:
     return {
         "configurable": {"thread_id": job_id, "tools": build_tools()},
         "run_name": f"travel_plan/{job_id}",
-        "callbacks": [LangChainTracer()],
         "metadata": {"job_id": job_id},
         "tags": [os.getenv("LANGCHAIN_TAGS", "env:dev")],
     }
