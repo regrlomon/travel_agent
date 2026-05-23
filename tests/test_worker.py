@@ -154,9 +154,6 @@ def test_run_plan_emits_error_on_exception(mocker):
     mock_r = MagicMock()
     mocker.patch("worker.tasks.r", mock_r)
 
-    async def _boom():
-        raise RuntimeError("test failure")
-
     mocker.patch("worker.tasks.asyncio.run", side_effect=RuntimeError("test failure"))
 
     from worker.tasks import run_plan

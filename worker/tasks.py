@@ -121,7 +121,10 @@ def run_plan(self, job_id: str, initial_state: dict):
         _handle_result(job_id, asyncio.run(_run()))
     except Exception as exc:
         logger.exception("[job=%s] run_plan failed", job_id)
-        _emit(job_id, {"type": "error", "message": f"规划失败，请稍后重试（{type(exc).__name__}）"})
+        try:
+            _emit(job_id, {"type": "error", "message": f"规划失败，请稍后重试（{type(exc).__name__}）"})
+        except Exception:
+            logger.warning("[job=%s] error emit failed", job_id)
         raise
 
 
@@ -143,5 +146,8 @@ def resume_plan(self, job_id: str, user_text: str, interrupt_id: str):
         _handle_result(job_id, asyncio.run(_run()))
     except Exception as exc:
         logger.exception("[job=%s] resume_plan failed", job_id)
-        _emit(job_id, {"type": "error", "message": f"规划失败，请稍后重试（{type(exc).__name__}）"})
+        try:
+            _emit(job_id, {"type": "error", "message": f"规划失败，请稍后重试（{type(exc).__name__}）"})
+        except Exception:
+            logger.warning("[job=%s] error emit failed", job_id)
         raise
