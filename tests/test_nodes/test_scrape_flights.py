@@ -1,7 +1,8 @@
 import pytest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import AsyncMock
-from agent.nodes.scrape_flights import run, _assemble_flight_pairs
+from agent.nodes.scrape_flights import run, _assemble_flight_pairs, _parse_time_pref, _rank_by_time_pref
+from models import Flight
 
 
 def make_state():
@@ -15,8 +16,6 @@ def make_state():
 
 
 def test_assemble_flight_pairs_valid_only():
-    from models import Flight
-    from datetime import datetime
     out1 = Flight(platform="ctrip", depart_airport="PVG", arrive_airport="DCY", price=980, flight_no="MU1", depart_time=datetime(2026, 7, 1))
     out2 = Flight(platform="ctrip", depart_airport="PVG", arrive_airport="CTU", price=650, flight_no="MU2", depart_time=datetime(2026, 7, 1))
     ret1 = Flight(platform="ctrip", depart_airport="DCY", arrive_airport="PVG", price=760, flight_no="CA1", depart_time=datetime(2026, 7, 8))
@@ -50,11 +49,6 @@ async def test_run_warns_when_no_flights(mocker):
     result = await run(state)
     assert result["flight_pairs"] == []
     assert len(result["warnings"]) > 0
-
-
-from agent.nodes.scrape_flights import _parse_time_pref, _rank_by_time_pref
-from models import Flight
-from datetime import datetime
 
 
 def _flight(hour: int, minute: int = 0) -> Flight:
@@ -93,6 +87,7 @@ def test_parse_time_pref_not_late():
 
 def test_parse_time_pref_no_preference():
     assert _parse_time_pref(None) is None
+    assert _parse_time_pref("") is None
     assert _parse_time_pref("随意") is None
     assert _parse_time_pref("不限") is None
 

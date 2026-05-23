@@ -30,7 +30,7 @@ def _parse_time_pref(pref: str | None) -> tuple[int, int] | None:
     m = re.search(r"(\d{1,2})[点:：]", p)
     if m:
         h = int(m.group(1))
-        return (h - 1) * 60, (h + 1) * 60
+        return max(0, (h - 1) * 60), min(24 * 60, (h + 1) * 60)
 
     # Named periods
     if any(kw in p for kw in ("早上", "上午", "早班")):
