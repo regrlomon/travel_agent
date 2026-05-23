@@ -107,8 +107,10 @@ def test_parse_time_pref_around_nine():
 
 def test_parse_time_pref_not_late():
     result = _parse_time_pref("不要太晚")
-    # returns (after_min, before_min); before should cap at 20:00
-    assert result[1] <= 20 * 60
+    assert result is not None
+    after_min, before_min = result
+    assert after_min == 0        # no lower bound (fly anytime from midnight)
+    assert before_min == 20 * 60  # cap at 20:00
 
 
 def test_parse_time_pref_no_preference():
@@ -419,6 +421,10 @@ def make_node_wrapper(job_id: str):
 
         @functools.wraps(fn)
         async def wrapped(state, config):
+            # Only emit for compute nodes (not in PROGRESS_MESSAGES → msg is None).
+            # HITL nodes (collect_intent, human_review) are intentionally absent.
+            # LangGraph checkpointing ensures completed compute nodes never re-run
+            # on resume, so no double-fire risk for this graph topology.
             if msg:
                 _emit(job_id, {"type": "progress", "node": node_name, "message": msg})
             return await fn(state, config)
@@ -503,7 +509,7 @@ git commit -m "feat: emit progress events per node and error events on exception
 ```python
 @pytest.mark.asyncio
 async def test_llm_build_reply_includes_intro_when_empty(mocker):
-    """First message (collected={}) should include self-introduction."""
+    """_llm_build_reply prompt must request self-introduction when collected={}."""
     mock_msg = MagicMock()
     mock_msg.content = "我是小Z助手，你想去哪儿？"
     mock_llm = MagicMock()
@@ -511,18 +517,25 @@ async def test_llm_build_reply_includes_intro_when_empty(mocker):
     mocker.patch("agent.nodes.collect_intent.get_llm", return_value=mock_llm)
 
     reply = await _llm_build_reply({})
-    # Verify the prompt sent to LLM requests a self-introduction
     prompt_sent = mock_llm.ainvoke.call_args[0][0][0].content
     assert "自我介绍" in prompt_sent or "小Z" in prompt_sent
 
 
 @pytest.mark.asyncio
-async def test_empty_raw_message_triggers_greeting_interrupt(mocker):
-    """When raw_message is empty, first interrupt contains self-introduction."""
-    interrupt_val = {"text": "川西7天，苏州出发"}
+async def test_empty_raw_message_triggers_hardcoded_greeting(mocker):
+    """When raw_message is empty, first interrupt must contain hardcoded greeting with '小Z助手'."""
+    greeting_reply = {"text": "川西7天，苏州出发"}
+    confirm_reply  = {"text": "确认"}
+
     mock_interrupt = mocker.patch(
         "agent.nodes.collect_intent.interrupt",
-        side_effect=[interrupt_val, interrupt_val],  # greeting + depart_date
+        side_effect=[
+            greeting_reply,   # greeting → user sends full intent
+            {"text": "自然风光、徒步"},  # select_interests
+            {"text": ""},             # depart_date skip
+            {"text": ""},             # time_pref skip
+            confirm_reply,            # confirm
+        ],
     )
     mocker.patch("agent.nodes.collect_intent._llm_extract",
                  new_callable=AsyncMock,
@@ -531,7 +544,7 @@ async def test_empty_raw_message_triggers_greeting_interrupt(mocker):
     mocker.patch("agent.nodes.collect_intent._llm_generate_tags",
                  new_callable=AsyncMock, return_value=["自然风光", "徒步"])
     mocker.patch("agent.nodes.collect_intent._llm_extract_time_prefs",
-                 new_callable=AsyncMock, return_value=({}, {}))
+                 new_callable=AsyncMock, return_value=(None, None))
     mocker.patch("agent.nodes.collect_intent._parse_confirm_reply",
                  new_callable=AsyncMock, return_value={"action": "confirm", "updates": {}})
 
@@ -546,7 +559,9 @@ async def test_empty_raw_message_triggers_greeting_interrupt(mocker):
 
     first_call = mock_interrupt.call_args_list[0][0][0]
     assert first_call["type"] == "collect_intent"
-    assert "小Z" in first_call["message"]
+    # Greeting must be hardcoded (deterministic), not LLM-generated
+    assert "小Z助手" in first_call["message"]
+    assert "搜景点" in first_call["message"] or "帮你" in first_call["message"]
 ```
 
 - [ ] **Step 2: 运行，确认失败**
@@ -557,9 +572,24 @@ pytest tests/test_nodes/test_collect_intent.py -k "intro or greeting" -v
 
 Expected: FAILED / ImportError
 
-- [ ] **Step 3: 更新 `_llm_build_reply` prompt，首次追问加自我介绍**
+- [ ] **Step 3: 修改 `run()` — 空 raw_message 时发 hardcoded 欢迎语**
 
-在 `collect_intent.py` 的 `_llm_build_reply` 函数中，将 prompt 改为：
+在 `collect_intent.py` 的 `run()` 函数开头，`raw = state.get("raw_message", "")` 之后插入：
+
+```python
+raw = state.get("raw_message", "")
+
+# When the user opens the app without typing, send a hardcoded greeting.
+# This must NOT go through the LLM — determinism matters here.
+if not raw:
+    greeting_reply = interrupt({
+        "type":    "collect_intent",
+        "message": "我是小Z助手，可以帮你搜景点、查机票、排行程。你想去哪儿玩？从哪儿出发，打算玩几天？",
+    })
+    raw = greeting_reply.get("text", "")
+```
+
+同时更新 `_llm_build_reply` prompt，非首次追问时不再加自我介绍（已有首次 hardcode，`_llm_build_reply` 仅用于 collected 不完整时的追问）：
 
 ```python
 async def _llm_build_reply(collected: dict) -> str:
@@ -571,26 +601,18 @@ async def _llm_build_reply(collected: dict) -> str:
     if not collected.get("duration_days"):
         missing.append("出行天数")
 
-    is_first_contact = not collected  # collected 为空说明是第一次开口
-
-    intro_instruction = (
-        "开头先用一句话做自我介绍：「我是小Z助手，可以帮你搜景点、查机票、排行程。」"
-        if is_first_contact else ""
-    )
-
-    prompt = f"""你是一个帮用户规划旅行的助手，现在需要向用户问缺少的信息。
+    prompt = f"""你是小Z助手，正在帮用户规划旅行，需要追问缺少的信息。
 
 已知信息：{json.dumps(collected, ensure_ascii=False)}
 还需要问：{missing}
 
 写一句中文问句，风格要求：
 - 像朋友发微信，直接问，不废话
-- {intro_instruction}
 - 禁止：太棒了、不错哦、好的呢、超级、魅力、波浪号（～）、感叹号堆叠
 - 禁止句首加任何感叹词或捧场词
 - 如果已知目的地，直接用它；如果目的地模糊，顺带提1-2个具体地方供参考
 - 可以在一句话里问多个缺失项
-- 不超过40字
+- 不超过30字
 
 只输出那一句话，不加任何解释。"""
     llm = get_llm(temperature=0.7)
@@ -849,9 +871,11 @@ async def _parse_confirm_reply(user_text: str, current: dict) -> dict:
         return {"action": "confirm", "updates": {}}
 ```
 
-- [ ] **Step 4: 完整改写 `run()` 函数，加入时段偏好和 confirm_intent**
+- [ ] **Step 4: 在 `run()` 中追加时段偏好问题和 confirm_intent 循环**
 
-将 `run()` 函数中从 `# 选填：出发日期` 往后的部分替换为：
+> ⚠️ Task 6 已在 `select_interests` 块之后、`# 选填：出发日期` 注释之前插入了标签选择代码。本步骤**仅替换从 `# 选填：出发日期` 注释到函数末尾的部分**，不碰 Task 6 的代码块。
+
+将 `run()` 函数中从 `# 选填：出发日期` 注释到函数结尾的部分替换为：
 
 ```python
     # 选填：出发日期，问一次，用户可跳过
@@ -913,7 +937,60 @@ async def _parse_confirm_reply(user_text: str, current: dict) -> dict:
     }
 ```
 
-- [ ] **Step 5: 运行所有 collect_intent 测试**
+- [ ] **Step 5: 补充多 interrupt 集成测试**
+
+在 `test_collect_intent.py` 末尾追加，验证完整 `run()` 流程按正确顺序触发所有 interrupt：
+
+```python
+@pytest.mark.asyncio
+async def test_run_full_flow_interrupt_sequence(mocker):
+    """Integration: run() fires interrupts in correct order for full flow."""
+    mocker.patch("agent.nodes.collect_intent._llm_extract",
+                 new_callable=AsyncMock,
+                 return_value={"destination": "川西", "origin": "苏州",
+                               "duration_days": 7, "interests": []})
+    mocker.patch("agent.nodes.collect_intent._llm_generate_tags",
+                 new_callable=AsyncMock, return_value=["自然风光", "徒步"])
+    mocker.patch("agent.nodes.collect_intent._llm_extract_time_prefs",
+                 new_callable=AsyncMock, return_value=("上午", None))
+    mocker.patch("agent.nodes.collect_intent._parse_confirm_reply",
+                 new_callable=AsyncMock, return_value={"action": "confirm", "updates": {}})
+
+    interrupt_replies = [
+        {"text": ""},                       # depart_date skip
+        {"text": "自然风光、徒步"},           # select_interests
+        {"text": "上午出发随意"},             # time_pref
+        {"text": "确认"},                    # confirm
+    ]
+    mock_interrupt = mocker.patch(
+        "agent.nodes.collect_intent.interrupt",
+        side_effect=interrupt_replies,
+    )
+    mock_tools = MagicMock()
+    mock_tools.__getitem__ = MagicMock(return_value=MagicMock(
+        lookup=AsyncMock(return_value=["PVG"])
+    ))
+    config = {"configurable": {"tools": mock_tools}}
+
+    from agent.nodes.collect_intent import run
+    result = await run(
+        {"raw_message": "想去川西，苏州出发，7天", "errors": [], "warnings": []},
+        config,
+    )
+
+    interrupt_types = [c[0][0]["type"] for c in mock_interrupt.call_args_list]
+    assert interrupt_types == [
+        "select_interests",
+        "collect_intent",   # depart_date
+        "collect_intent",   # time_pref
+        "confirm_intent",
+    ]
+    assert result["destination"] == "川西"
+    assert result["depart_time_pref"] == "上午"
+    assert result["return_time_pref"] is None
+```
+
+- [ ] **Step 6: 运行所有 collect_intent 测试**
 
 ```bash
 pytest tests/test_nodes/test_collect_intent.py -v
@@ -921,7 +998,7 @@ pytest tests/test_nodes/test_collect_intent.py -v
 
 Expected: all PASSED
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add agent/nodes/collect_intent.py tests/test_nodes/test_collect_intent.py
@@ -1220,10 +1297,10 @@ git commit -m "feat: add SelectInterests multi-tag component"
       <div class="confirm-input-bar">
         <input
           v-model="draft"
-          placeholder="有要改的吗？直接说"
-          @keydown.enter.prevent="send"
+          placeholder="有要改的吗？直接说，或直接点确认"
+          @keydown.enter.prevent="confirm"
         />
-        <button class="btn-send" @click="sendConfirm">确认，开始规划 →</button>
+        <button class="btn-send" @click="confirm">确认，开始规划 →</button>
       </div>
     </div>
   </div>
@@ -1237,14 +1314,8 @@ const emit = defineEmits(['reply'])
 
 const draft = ref('')
 
-function send() {
-  const text = draft.value.trim()
-  if (!text) return
-  draft.value = ''
-  emit('reply', text)
-}
-
-function sendConfirm() {
+function confirm() {
+  // Send draft text if user typed a modification; otherwise send "确认"
   emit('reply', draft.value.trim() || '确认')
   draft.value = ''
 }
