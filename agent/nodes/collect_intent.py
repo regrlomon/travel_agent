@@ -1,8 +1,9 @@
-import json, os
-import litellm
+import json
+from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 from agent.state import TravelPlanState
+from agent.llm import get_llm
 
 
 def _is_complete(collected: dict) -> bool:
@@ -27,12 +28,9 @@ Extract and return JSON with these keys (only include keys mentioned in message,
 - depart_date: string ISO date or null
 
 Return only valid JSON, no markdown."""
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    extracted = json.loads(resp.choices[0].message.content)
+    llm = get_llm(temperature=0.1)
+    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    extracted = json.loads(msg.content)
     merged = {**current}
     for k, v in extracted.items():
         if v is not None and v != [] and v != "":
@@ -60,19 +58,15 @@ Write ONE natural, warm reply in Chinese that:
 3. If destination is vague or unknown, offer 2-3 suggestions based on the style mentioned
 
 Keep it under 60 characters. Be friendly, not robotic. No bullet points."""
-    resp = await litellm.acompletion(
-        model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
-    return resp.choices[0].message.content.strip()
+    llm = get_llm(temperature=0.7)
+    msg = await llm.ainvoke([HumanMessage(content=prompt)])
+    return msg.content.strip()
 
 
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
     tools = config["configurable"]["tools"]
     collected: dict = {}
 
-    # Process the initial message from API if present
     raw = state.get("raw_message", "")
     if raw:
         collected = await _llm_extract(raw, collected)
@@ -85,7 +79,6 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
         })
         collected = await _llm_extract(user_reply.get("text", ""), collected)
 
-    # Resolve origin airports accurately via tool
     origin_airports = await tools["airports"].lookup(collected["origin"])
 
     return {

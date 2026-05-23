@@ -21,12 +21,14 @@ def test_is_complete_empty():
 
 @pytest.mark.asyncio
 async def test_llm_extract_full_sentence(mocker):
-    mock_resp = MagicMock()
-    mock_resp.choices[0].message.content = (
+    mock_msg = MagicMock()
+    mock_msg.content = (
         '{"destination": "川西", "origin": "苏州", "duration_days": 7, '
         '"interests": ["自然风光"], "depart_date": null}'
     )
-    mocker.patch("litellm.acompletion", AsyncMock(return_value=mock_resp))
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(return_value=mock_msg)
+    mocker.patch("agent.nodes.collect_intent.get_llm", return_value=mock_llm)
 
     result = await _llm_extract("川西7天，苏州出发，喜欢自然风光", {})
     assert result["destination"] == "川西"
@@ -37,9 +39,11 @@ async def test_llm_extract_full_sentence(mocker):
 
 @pytest.mark.asyncio
 async def test_llm_build_reply_asks_missing(mocker):
-    mock_resp = MagicMock()
-    mock_resp.choices[0].message.content = "从哪里出发？大概玩几天？"
-    mocker.patch("litellm.acompletion", AsyncMock(return_value=mock_resp))
+    mock_msg = MagicMock()
+    mock_msg.content = "从哪里出发？大概玩几天？"
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(return_value=mock_msg)
+    mocker.patch("agent.nodes.collect_intent.get_llm", return_value=mock_llm)
 
     reply = await _llm_build_reply({"destination": "川西"})
     assert isinstance(reply, str)
