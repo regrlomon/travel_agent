@@ -4,11 +4,13 @@ from unittest.mock import AsyncMock, MagicMock
 from agent.nodes.plan_itinerary import run, _build_poi_table, _build_flight_table
 
 
-def make_poi(poi_id, name, confidence="high", tags=None):
+def make_poi(poi_id, name, confidence="high", tags=None,
+             mention_count=3, amap_rating=4.5, has_negative=False, warning=False):
     from models import POI
     return POI(poi_id=poi_id, name=name, coords=(28.0, 100.0), category="自然景观",
-               tags=tags or [], desc="", amap_rating=4.5, sources=[],
-               mention_count=3, platform_count=2, confidence=confidence)
+               tags=tags or [], desc="", amap_rating=amap_rating, sources=[],
+               mention_count=mention_count, platform_count=2, confidence=confidence,
+               has_negative=has_negative, warning=warning)
 
 
 def make_pair(pair_id):
@@ -68,3 +70,46 @@ async def test_run_returns_itineraries(mocker):
     }
     result = await run(state)
     assert len(result["itineraries"]) >= 1
+
+
+def test_build_poi_table_includes_mention_and_rating():
+    from agent.nodes.plan_itinerary import _build_poi_table
+    poi = make_poi("p1", "外滩", mention_count=15, amap_rating=4.8)
+    table = _build_poi_table([poi])
+    assert "15" in table
+    assert "4.8" in table
+    assert "confidence" not in table
+    assert "region" not in table
+
+
+def test_build_poi_table_shows_warning_emoji():
+    from agent.nodes.plan_itinerary import _build_poi_table
+    poi = make_poi("p1", "灵隐寺", warning=True)
+    table = _build_poi_table([poi])
+    assert "⚠️" in table
+
+
+def test_preprocess_pois_niche_mode_filters_negative():
+    from agent.nodes.plan_itinerary import _preprocess_pois
+    p_ok = make_poi("p1", "断桥", has_negative=False)
+    p_bad = make_poi("p2", "灵隐寺", has_negative=True)
+    result = _preprocess_pois([p_ok, p_bad], interests=["小众", "安静"])
+    names = [p.name for p in result]
+    assert "断桥" in names
+    assert "灵隐寺" not in names
+
+
+def test_preprocess_pois_popular_mode_keeps_negative_with_warning():
+    from agent.nodes.plan_itinerary import _preprocess_pois
+    p_bad = make_poi("p1", "灵隐寺", has_negative=True)
+    result = _preprocess_pois([p_bad], interests=["热门景点", "网红打卡"])
+    assert len(result) == 1
+    assert result[0].warning is True
+
+
+def test_preprocess_pois_default_keeps_negative_with_warning():
+    from agent.nodes.plan_itinerary import _preprocess_pois
+    p_bad = make_poi("p1", "灵隐寺", has_negative=True)
+    result = _preprocess_pois([p_bad], interests=["历史文化"])
+    assert len(result) == 1
+    assert result[0].warning is True

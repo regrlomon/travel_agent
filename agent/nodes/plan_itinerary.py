@@ -11,12 +11,31 @@ from models import POI, FlightPair, DayPlan, ItineraryOption
 
 logger = logging.getLogger(__name__)
 
+_NICHE_KEYWORDS = {"小众", "安静", "冷门", "人少", "清净"}
+
+
+def _preprocess_pois(pois: list[POI], interests: list[str]) -> list[POI]:
+    interest_set = set(interests)
+    niche_mode = bool(interest_set & _NICHE_KEYWORDS)
+    result = []
+    for p in pois:
+        if p.has_negative and niche_mode:
+            continue
+        if p.has_negative:
+            p.warning = True
+        result.append(p)
+    return result
+
 
 def _build_poi_table(pois: list[POI]) -> str:
-    lines = ["poi_id | name | category | confidence | region | tags"]
+    lines = ["poi_id | name | category | mention_count | amap_rating | warning | tags"]
     for p in pois:
         tags = ",".join(p.tags) if p.tags else "-"
-        lines.append(f"{p.poi_id} | {p.name} | {p.category} | {p.confidence} | ({p.coords[0]:.2f},{p.coords[1]:.2f}) | {tags}")
+        warn = "⚠️" if p.warning else ""
+        lines.append(
+            f"{p.poi_id} | {p.name} | {p.category} | {p.mention_count} "
+            f"| {p.amap_rating} | {warn} | {tags}"
+        )
     return "\n".join(lines)
 
 
