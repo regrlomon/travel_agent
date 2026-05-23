@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from agent.nodes.plan_itinerary import run, _build_poi_table, _build_flight_table
 
 
@@ -46,14 +46,17 @@ async def test_run_returns_itineraries(mocker):
         ]
     }'''
     call_count = 0
-    async def fake_llm(**kwargs):
+
+    async def fake_ainvoke(messages):
         nonlocal call_count
         call_count += 1
-        m = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-        m.choices[0].message.content = phase1_response if call_count == 1 else phase2_response
+        m = MagicMock()
+        m.content = phase1_response if call_count == 1 else phase2_response
         return m
 
-    mocker.patch("litellm.acompletion", side_effect=fake_llm)
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(side_effect=fake_ainvoke)
+    mocker.patch("agent.nodes.plan_itinerary.get_llm", return_value=mock_llm)
 
     state = {
         "pois": [make_poi("p1", "稻城亚丁"), make_poi("p2", "四姑娘山")],
