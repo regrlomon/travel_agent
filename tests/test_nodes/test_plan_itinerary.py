@@ -58,7 +58,7 @@ async def test_run_returns_itineraries(mocker):
     state = {
         "pois": [make_poi("p1", "稻城亚丁"), make_poi("p2", "四姑娘山")],
         "flight_pairs": [make_pair("uuid-1")],
-        "travel_time_matrix": {("p1", "p2"): 30},
+        "travel_time_matrix": {"p1|p2": 30},
         "interests": ["徒步"],
         "duration_days": 7,
         "errors": [], "warnings": [], "job_id": "test",
