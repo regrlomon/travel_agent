@@ -58,7 +58,7 @@ async def _llm_build_reply(collected: dict, config=None) -> str:
     if not collected.get("duration_days"):
         missing.append("出行天数")
 
-    prompt = f"""你是一个帮用户规划旅行的助手，现在需要向用户问缺少的信息。
+    prompt = f"""你是小Z助手，正在帮用户规划旅行，需要追问缺少的信息。
 
 已知信息：{json.dumps(collected, ensure_ascii=False)}
 还需要问：{missing}
@@ -82,6 +82,16 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
     collected: dict = {}
 
     raw = state.get("raw_message", "")
+
+    # When the user opens the app without typing, send a hardcoded greeting.
+    # This must NOT go through the LLM — determinism matters here.
+    if not raw:
+        greeting_reply = interrupt({
+            "type":    "collect_intent",
+            "message": "我是小Z助手，可以帮你搜景点、查机票、排行程。你想去哪儿玩？从哪儿出发，打算玩几天？",
+        })
+        raw = greeting_reply.get("text", "")
+
     if raw:
         collected = await _llm_extract(raw, collected, config)
 
