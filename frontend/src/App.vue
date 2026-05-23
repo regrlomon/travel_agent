@@ -46,6 +46,11 @@
     <ProgressView
       v-else-if="phase === 'progress'"
       :items="progressItems"
+      :streaming-flights="streamingFlights"
+      :streaming-pois="streamingPois"
+      :stream-text="streamText"
+      :flights-total-found="flightsTotalFound"
+      :pois-total-found="poisTotalFound"
     />
     <SelectInterests
       v-else-if="phase === 'interests'"
@@ -86,6 +91,7 @@ import ResultView   from './components/ResultView.vue'
 const {
   phase, messages, progressItems, reviewData, finalResult, error,
   confirmData, interestsData,
+  streamingFlights, streamingPois, streamText, flightsTotalFound, poisTotalFound,
   startChat, sendReply,
 } = useSSE()
 
