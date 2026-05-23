@@ -1,41 +1,77 @@
 <template>
   <div id="app">
-    <header>
-      <h1>✈ 智能出行助手</h1>
-      <nav class="stepper">
-        <span :class="{ active: step === 1 }">① 确认需求</span>
-        <span :class="{ active: step === 2 }">② 规划中</span>
-        <span :class="{ active: step === 3 }">③ 确认选择</span>
-        <span :class="{ active: step === 4 }">④ 查看行程</span>
-      </nav>
+    <header class="topbar">
+      <span class="topbar-brand">✈ TRAVEL AI</span>
+      <div class="stepper">
+        <div class="step-dot" :class="stepClass(1)"></div>
+        <div class="step-dot" :class="stepClass(2)"></div>
+        <div class="step-dot" :class="stepClass(3)"></div>
+        <div class="step-dot" :class="stepClass(4)"></div>
+      </div>
     </header>
 
-    <main>
-      <StepConfirm
-        v-if="step <= 1"
-        :hitlData="step === 1 ? hitlData : null"
-        :loading="step === 1 && !hitlData"
-        @submit="onSubmit"
-        @reply="onReply"
-      />
-      <StepProgress v-if="step === 2" :progress="progress" />
-      <StepReview   v-if="step === 3" :hitlData="hitlData" @reply="onReply" />
-      <StepResults  v-if="step === 4" :result="result" />
+    <ChatView
+      v-if="phase === 'idle' || phase === 'chat'"
+      :messages="messages"
+      :waiting="waiting"
+      @send="onSend"
+    />
+    <ProgressView
+      v-else-if="phase === 'progress'"
+      :items="progressItems"
+    />
+    <PlanReview
+      v-else-if="phase === 'review'"
+      :data="reviewData"
+      @reply="onReply"
+    />
+    <ResultView
+      v-else-if="phase === 'done'"
+      :result="finalResult"
+    />
 
-      <p v-if="error" class="error">{{ error }}</p>
-    </main>
+    <div v-if="phase === 'error'" style="padding:24px;color:var(--error)">
+      {{ error }}
+    </div>
   </div>
 </template>
 
 <script setup>
-import { useSSE } from './composables/useWebSocket.js'
-import StepConfirm  from './components/StepConfirm.vue'
-import StepProgress from './components/StepProgress.vue'
-import StepReview   from './components/StepReview.vue'
-import StepResults  from './components/StepResults.vue'
+import { computed } from 'vue'
+import { useSSE } from './composables/useSSE.js'
+import ChatView     from './components/ChatView.vue'
+import ProgressView from './components/ProgressView.vue'
+import PlanReview   from './components/PlanReview.vue'
+import ResultView   from './components/ResultView.vue'
 
-const { step, hitlData, progress, result, error, startPlan, sendReply } = useSSE()
+const {
+  phase, messages, progressItems, reviewData, finalResult, error,
+  startChat, sendReply,
+} = useSSE()
 
-function onSubmit(formData) { startPlan(formData) }
-function onReply(text)      { sendReply(text) }
+const waiting = computed(() =>
+  phase.value === 'chat' &&
+  messages.value.length > 0 &&
+  messages.value[messages.value.length - 1]?.role === 'user'
+)
+
+function onSend(text) {
+  if (phase.value === 'idle') {
+    startChat(text)
+  } else {
+    sendReply(text)
+  }
+}
+
+function onReply(text) {
+  sendReply(text)
+}
+
+function stepClass(n) {
+  const map = { idle: 0, chat: 1, progress: 2, review: 3, done: 4, error: 0 }
+  const current = map[phase.value] ?? 0
+  if (n < current) return 'done'
+  if (n === current) return 'active'
+  return ''
+}
 </script>
