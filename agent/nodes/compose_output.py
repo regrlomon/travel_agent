@@ -32,7 +32,7 @@ def _group_flights_comparison(pairs: list[FlightPair]) -> list[dict]:
     return list(groups.values())
 
 
-def run(state: TravelPlanState, config=None) -> dict:
+async def run(state: TravelPlanState, config=None) -> dict:
     logger.info("[compose_output] start, pois=%d pairs=%d itineraries=%d",
                 len(state.get("pois", [])), len(state.get("flight_pairs", [])), len(state.get("itineraries", [])))
     pois = state.get("pois", [])

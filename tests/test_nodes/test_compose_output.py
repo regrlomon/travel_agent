@@ -1,3 +1,4 @@
+import pytest
 from datetime import datetime
 from agent.nodes.compose_output import run, _group_flights_comparison
 
@@ -30,12 +31,14 @@ def test_run_no_pois_returns_error():
         "origin": "苏州",
         "origin_airports": ["PVG", "SHA", "NKG"],
     }
-    result = run(state)
+    import asyncio
+    result = asyncio.run(run(state))
     assert result["status"] == "error"
     assert "景点" in result["error"]
 
 
-def test_run_no_flights_degrades_gracefully():
+@pytest.mark.asyncio
+async def test_run_no_flights_degrades_gracefully():
     from models import POI, ItineraryOption, FlightPair, Flight, DayPlan
     poi = POI(poi_id="p1", name="稻城亚丁", coords=(28.67, 100.3), category="自然", tags=[], desc="desc", amap_rating=4.9, sources=[], mention_count=3, platform_count=2, confidence="high")
     pair = make_pair("u1", "PVG", "PVG", 980, 760, "ctrip")
@@ -50,12 +53,13 @@ def test_run_no_flights_degrades_gracefully():
         "origin": "苏州",
         "origin_airports": ["PVG"],
     }
-    result = run(state)
+    result = await run(state)
     assert result["status"] == "ok"
     assert len(result["warnings"]) > 0
 
 
-def test_run_origin_expansion_warning():
+@pytest.mark.asyncio
+async def test_run_origin_expansion_warning():
     from models import POI
     poi = POI(poi_id="p1", name="稻城亚丁", coords=(28.67, 100.3), category="自然", tags=[], desc="desc", amap_rating=4.9, sources=[], mention_count=3, platform_count=2, confidence="high")
     state = {
@@ -67,5 +71,5 @@ def test_run_origin_expansion_warning():
         "origin": "苏州",
         "origin_airports": ["PVG", "SHA", "NKG"],
     }
-    result = run(state)
+    result = await run(state)
     assert any("苏州" in w for w in result["warnings"])
