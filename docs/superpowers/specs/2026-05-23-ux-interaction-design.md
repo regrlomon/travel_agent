@@ -23,7 +23,8 @@
 | type | 触发时机 | data 结构 |
 |---|---|---|
 | `hitl_request` (collect_intent) | 现有，追问缺失信息 / 首次自我介绍 | `{type, message}` |
-| `hitl_request` (confirm_intent) | **新增**，全部信息收齐后展示确认卡 | `{type, summary}` |
+| `hitl_request` (select_interests) | **新增**，必填信息收齐后展示兴趣标签 | `{type, message, tags, preselected}` |
+| `hitl_request` (confirm_intent) | **新增**，兴趣选完后展示确认卡 | `{type, summary}` |
 | `progress` | **新增**，每个后台节点启动时 | `{type, node, message}` |
 | `hitl_request` (review_plan) | 现有，方案生成后 | `{type, message, plans}` |
 | `done` | 现有 | `{type, result}` |
@@ -54,6 +55,25 @@
 
 `depart_time_pref` 和 `return_time_pref` 仅在用户表达了偏好时才包含，缺省不传该字段。
 
+### select_interests 完整 SSE 消息结构
+
+```json
+{
+  "type": "hitl_request",
+  "interrupt_id": "<uuid>",
+  "data": {
+    "type": "select_interests",
+    "message": "你对哪些感兴趣？选几个帮你优先安排（也可以跳过）",
+    "tags": ["自然风光", "徒步", "寺庙朝圣", "高原摄影", "藏族文化", "美食"],
+    "preselected": ["徒步"]
+  }
+}
+```
+
+`tags` 由 LLM 根据目的地动态生成（6–10 个），`preselected` 是已从用户文本中提取到的 interests（可为空列表）。
+
+前端将用户选中的标签以顿号拼接成字符串发回（如 `"自然风光、徒步、寺庙朝圣"`），跳过时发空字符串。后端直接按顿号/逗号 split，不再走 LLM 提取。
+
 ### progress 节点 message 映射
 
 | node | message |
@@ -83,19 +103,21 @@ return_time_pref: Optional[str]   # 返程时段偏好，自然语言，如 "下
 
 **改动点：**
 
-1. **首次自我介绍**：当 `raw_message` 为空时，第一条 interrupt 消息改为带自我介绍的欢迎语，说明小Z助手能做什么：
+1. **首次自我介绍**：当 `raw_message` 为空时，第一条 interrupt 消息改为带自我介绍的欢迎语：
    > "我是小Z助手，可以帮你搜景点、查机票、排行程。你想去哪儿玩？从哪儿出发，打算玩几天？"
 
 2. **非空但有追问**：`_llm_build_reply` 的 prompt 风格不变（朋友发微信），但首次追问时在问句前追加一句自我介绍（通过 prompt 指令控制，只在 `collected` 为空时加）。
 
-3. **新增时段偏好问题**：必填信息收齐后，新增一次可选 interrupt 询问去程和返程时段：
+3. **新增 `_llm_generate_tags(destination: str) -> list[str]`**：必填信息收齐后，调用 LLM 根据目的地生成 6–10 个兴趣标签，返回字符串列表。示例 prompt 要求输出 JSON 数组，如 `["自然风光", "徒步", "寺庙朝圣", "高原摄影", "藏族文化", "温泉"]`。
+
+4. **新增 `select_interests` interrupt**：生成标签后发出，payload 见上方结构。`preselected` 填入当前已从文本提取的 `collected.get("interests", [])`。用户回复后直接 split（`"、"` 或 `","`），覆盖 `collected["interests"]`；空字符串则保留已提取的值。
+
+5. **新增时段偏好问题**：interests 处理完后，问去程和返程时段：
    > "去程大概想几点出发？返程呢，比如有些人会想最后一天玩到下午再飞。"
 
-   用 LLM 提取 `depart_time_pref` 和 `return_time_pref`（两者均可为空，用户可跳过）。提取 prompt 要求：
-   - 识别模糊时间描述（"9点左右" / "不要太晚" / "上午" / "下午随意"）
-   - 输出原始自然语言字符串，不做标准化，交给 `scrape_flights` 处理
+   用 LLM 提取 `depart_time_pref` 和 `return_time_pref`（均可为空，用户可跳过）。
 
-4. **confirm_intent interrupt**：所有信息（含时段偏好，但时段偏好缺省也允许通过）收齐后，发一次 `confirm_intent` interrupt，payload 为上述 summary 结构。收到用户回复后，用 LLM 判断意图：
+6. **confirm_intent interrupt**：所有信息（含时段偏好，但时段偏好缺省也允许通过）收齐后，发一次 `confirm_intent` interrupt，payload 为上述 summary 结构。收到用户回复后，用 LLM 判断意图：
    - 若用户确认（"好的" / "确认" / "没问题" 等），继续流程
    - 若用户提到修改（提到任何字段变更），将修改内容合并到 `collected` 中，重新进入追问/确认循环
    - 判断 prompt 返回 `{"action": "confirm" | "modify", "updates": {...}}`
@@ -193,15 +215,18 @@ except Exception as exc:
 
 ### 3.1 `frontend/src/composables/useSSE.js`
 
-- 新增 `confirmData = ref(null)`
-- `hitl_request` 处理分支新增 `confirm_intent`：
+- 新增 `confirmData = ref(null)`、`interestsData = ref(null)`
+- `hitl_request` 处理分支新增两个类型：
   ```js
+  } else if (msg.data.type === 'select_interests') {
+    phase.value = 'interests'
+    interestsData.value = msg.data
   } else if (msg.data.type === 'confirm_intent') {
     phase.value = 'confirm'
     confirmData.value = msg.data.summary
   }
   ```
-- 新增 `error` 处理（已有 `phase === 'error'` 状态，补 type 判断）：
+- 新增 `error` 处理：
   ```js
   } else if (msg.type === 'error') {
     error.value = msg.message
@@ -209,33 +234,48 @@ except Exception as exc:
     eventSource.close()
   }
   ```
-- 导出 `confirmData`
+- 导出 `confirmData`、`interestsData`
 
-### 3.2 新增 `frontend/src/components/ConfirmIntent.vue`
+### 3.2 新增 `frontend/src/components/SelectInterests.vue`
+
+多选标签组件，接收 `data` prop（`{message, tags, preselected}`），emit `reply` 事件。
+
+UI 结构：
+- 标题来自 `data.message`
+- 标签列表：`data.tags` 中的每个标签渲染为可点击 chip，`data.preselected` 中的默认选中
+- 用户点击 toggle 选中/取消
+- "确认" 按钮：将选中标签以 `"、"` 拼接后 emit reply；若无选中则发空字符串（跳过）
+
+### 3.3 新增 `frontend/src/components/ConfirmIntent.vue`
 
 全屏确认卡组件，接收 `data` prop（summary 对象），emit `reply` 事件。
 
 UI 结构：
 - 标题"帮你确认一下出行信息" + 副标题"没问题就点确认，或者告诉我哪里要改"
-- 信息行列表：目的地、出发地、天数、出发时间（仅在 depart_date 有值时）
+- 信息行列表：目的地、出发地、天数、出发时间（仅在 depart_date 有值时）、兴趣（若非空）
 - 时段偏好块（蓝色背景）：
   - 仅当 `data.depart_time_pref` 存在时显示"✓ 去程优先安排 {depart_time_pref} 的航班"
   - 仅当 `data.return_time_pref` 存在时显示"✓ 返程 {return_time_pref}"
-- 底部输入框（用于用户修改）+ "确认，开始规划 →" 按钮 + "修改" 按钮
+- 底部输入框（用于用户修改）+ "确认，开始规划 →" 按钮
 - "确认"按钮发送固定文字 `"确认"`；输入框有内容时发输入框内容
 
-### 3.3 `frontend/src/App.vue`
+### 3.4 `frontend/src/App.vue`
 
-- 新增 `confirm` phase 处理：
+- 新增 `interests` 和 `confirm` phase 处理：
   ```html
+  <SelectInterests
+    v-else-if="phase === 'interests'"
+    :data="interestsData"
+    @reply="onReply"
+  />
   <ConfirmIntent
     v-else-if="phase === 'confirm'"
     :data="confirmData"
     @reply="onReply"
   />
   ```
-- 导入 `ConfirmIntent`、从 `useSSE` 获取 `confirmData`
-- `stepClass` 映射新增 `confirm: 1`（与 chat 同阶段，step 1）
+- 导入两个新组件，从 `useSSE` 获取 `interestsData`、`confirmData`
+- `stepClass` 映射：`interests: 1`、`confirm: 1`（同 chat，均属 step 1）
 
 ### 3.4 `frontend/src/components/ProgressView.vue`
 
