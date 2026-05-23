@@ -23,7 +23,7 @@ async def test_graph_runs_with_mocked_nodes(mocker):
     mocker.patch("agent.nodes.parse_input.run", new_callable=AsyncMock, return_value={
         "destination_region": "甘孜州", "destination_amap_cities": ["513300"],
         "destination_airports": ["CTU"], "origin_airports": ["PVG"],
-        "depart_dates": [], "search_keywords": ["川西"],
+        "depart_dates": [],
     })
     mocker.patch("agent.nodes.discover_pois.run", new_callable=AsyncMock, return_value={
         "pois": [], "travel_time_matrix": {}
