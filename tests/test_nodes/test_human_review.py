@@ -76,3 +76,23 @@ def test_format_plans_for_display_returns_list():
     assert "flight" in result[0]
     assert "days" in result[0]
     assert "summary" in result[0]
+
+
+def test_format_plans_includes_depart_and_return_time():
+    from agent.nodes.human_review import _format_plans_for_display
+    itinerary = _make_itinerary()
+    result = _format_plans_for_display([itinerary])
+    plan = result[0]
+    # depart_time and return_time must be HH:MM strings
+    assert "depart_time" in plan
+    assert "return_time" in plan
+    assert plan["depart_time"] == "00:00"   # datetime(2026, 7, 1) → 00:00
+    assert plan["return_time"] == "00:00"   # datetime(2026, 7, 8) → 00:00
+
+
+def test_format_plans_depart_date_includes_time():
+    from agent.nodes.human_review import _format_plans_for_display
+    itinerary = _make_itinerary()
+    result = _format_plans_for_display([itinerary])
+    # depart_date should now include HH:MM
+    assert ":" in result[0]["depart_date"]  # "2026-07-01 00:00"

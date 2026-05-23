@@ -19,16 +19,24 @@ def _format_plans_for_display(itineraries: list[ItineraryOption]) -> list[dict]:
             {"day": d.day, "pois": [p.name for p in d.pois], "note": d.transport_note}
             for d in itin.days
         ]
+
+        depart_time_str = fp.outbound.depart_time.strftime("%H:%M") if fp else ""
+        return_time_str = fp.return_flight.depart_time.strftime("%H:%M") if fp else ""
+        depart_date_str = fp.outbound.depart_time.strftime("%Y-%m-%d %H:%M") if fp else ""
+
         flight_info = (
-            f"{fp.outbound.depart_airport}→{fp.outbound.arrive_airport} ¥{fp.total_price}/人"
+            f"{fp.outbound.depart_airport}→{fp.outbound.arrive_airport} "
+            f"{depart_time_str} ¥{fp.total_price}/人"
             if fp else "待定（请自行查询）"
         )
-        depart_date = fp.outbound.depart_time.strftime("%Y-%m-%d") if fp else ""
+
         plans.append({
             "option_id":   itin.option_id,
             "summary":     itin.summary,
             "flight":      flight_info,
-            "depart_date": depart_date,
+            "depart_date": depart_date_str,
+            "depart_time": depart_time_str,
+            "return_time": return_time_str,
             "days":        days_summary,
         })
     return plans
@@ -58,7 +66,7 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
 
     user_reply = interrupt({
         "type":    "review_plan",
-        "message": f"帮你规划了 {len(plans)} 个方案，你看哪个合适，或者有想调整的？",
+        "message": f"帮你规划了 {len(plans)} 套方案，每套搭配了不同航班供参考，可以告诉我想调整出发时间或行程安排。",
         "plans":   plans,
     })
 
