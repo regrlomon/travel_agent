@@ -225,6 +225,27 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     if not flight_pairs:
         warnings.append("机票数据获取失败，请自行查询各平台")
 
+    # Emit top-3 flight pairs for streaming UI
+    emit_fn = (config or {}).get("configurable", {}).get("progress_emit")
+    if emit_fn and flight_pairs:
+        emit_fn({
+            "type": "flight_found",
+            "total_found": len(flight_pairs),
+            "flights": [
+                {
+                    "pair_id": fp.pair_id,
+                    "outbound_dep": fp.outbound.depart_airport,
+                    "outbound_arr": fp.outbound.arrive_airport,
+                    "outbound_time": fp.outbound.depart_time.strftime("%H:%M"),
+                    "outbound_date": fp.outbound.depart_time.strftime("%Y-%m-%d"),
+                    "return_time": fp.return_flight.depart_time.strftime("%H:%M"),
+                    "flight_no": fp.outbound.flight_no,
+                    "total_price": fp.total_price,
+                }
+                for fp in flight_pairs[:3]
+            ],
+        })
+
     logger.info("[scrape_flights] done, pairs=%d best_date=%s", len(flight_pairs), best_date)
     return {
         "flight_pairs": flight_pairs,
