@@ -13,7 +13,13 @@
       >
         <div class="plan-option-id">方案 {{ plan.option_id }}</div>
         <div class="plan-summary">{{ plan.summary }}</div>
-        <div class="plan-flight">✈ {{ plan.flight }}  · {{ plan.depart_date }}</div>
+        <div class="plan-flight">
+          <span>✈ 去程 <strong>{{ plan.depart_time || '--:--' }}</strong></span>
+          <span class="flight-route">{{ plan.flight }}</span>
+        </div>
+        <div v-if="plan.return_time" class="plan-flight plan-flight-return">
+          ✈ 返程 <strong>{{ plan.return_time }}</strong>
+        </div>
         <div class="plan-days">
           <div v-for="day in plan.days.slice(0, 3)" :key="day.day" class="plan-day">
             Day {{ day.day }}：{{ day.pois.join(' · ') }}
@@ -51,3 +57,10 @@ function confirm() {
   emit('reply', text)
 }
 </script>
+
+<style scoped>
+.plan-flight { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+.plan-flight strong { font-size: 15px; color: var(--text-primary); font-weight: 700; }
+.plan-flight-return { margin-bottom: 10px; }
+.flight-route { margin-left: 8px; }
+</style>
