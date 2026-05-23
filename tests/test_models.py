@@ -29,3 +29,11 @@ def test_itinerary_option_structure():
     opt = ItineraryOption(option_id="A", summary="DCY进CTU出", flights=pair, days=[day])
     assert opt.option_id == "A"
     assert opt.flights.total_price == 1740
+
+
+def test_poi_has_negative_defaults_false():
+    from models import POI
+    p = POI(poi_id="x", name="外滩", coords=(31.0, 121.0), category="景点",
+            desc="", amap_rating=4.5, mention_count=1, platform_count=1, confidence="medium")
+    assert p.has_negative is False
+    assert p.warning is False

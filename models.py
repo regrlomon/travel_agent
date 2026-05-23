@@ -22,6 +22,8 @@ class POI(BaseModel):
     mention_count: int
     platform_count: int
     confidence: str
+    has_negative: bool = False
+    warning: bool = False
 
 
 class Flight(BaseModel):
