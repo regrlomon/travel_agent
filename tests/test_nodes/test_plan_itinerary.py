@@ -113,3 +113,37 @@ def test_preprocess_pois_default_keeps_negative_with_warning():
     result = _preprocess_pois([p_bad], interests=["历史文化"])
     assert len(result) == 1
     assert result[0].warning is True
+
+
+@pytest.mark.asyncio
+async def test_run_filters_negative_pois_in_niche_mode(mocker):
+    phase1_response = '[{"plan_id": "A", "pair_id": null, "days": [{"day": 1, "poi_ids": ["p1"]}]}]'
+    phase2_response = '{"option_id": "A", "summary": "test", "days": [{"day": 1, "transport_note": "", "estimated_travel_minutes": 0}]}'
+    call_count = 0
+
+    async def fake_ainvoke(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        m = MagicMock()
+        m.content = phase1_response if call_count == 1 else phase2_response
+        return m
+
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(side_effect=fake_ainvoke)
+    mocker.patch("agent.nodes.plan_itinerary.get_llm", return_value=mock_llm)
+
+    state = {
+        "pois": [
+            make_poi("p1", "断桥", has_negative=False),
+            make_poi("p2", "灵隐寺", has_negative=True),
+        ],
+        "flight_pairs": [],
+        "travel_time_matrix": {},
+        "interests": ["小众", "安静"],
+        "duration_days": 3,
+        "errors": [], "warnings": [], "job_id": "test",
+    }
+    result = await run(state)
+    first_call_prompt = mock_llm.ainvoke.call_args_list[0][0][0][0].content
+    assert "灵隐寺" not in first_call_prompt
+    assert "断桥" in first_call_prompt

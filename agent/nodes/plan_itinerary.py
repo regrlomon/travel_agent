@@ -105,6 +105,11 @@ async def _phase1_select(pois: list[POI], pairs: list[FlightPair], interests: li
 Interests: {', '.join(interests)}
 Trip duration: {duration_days} days{user_context}
 
+POI field guide:
+- mention_count: times mentioned in XHS/travel articles (higher = more popular)
+- amap_rating: 高德 rating 0-5
+- ⚠️: recent user complaints (crowds, disappointment, etc.)
+
 POIs:
 {poi_table}
 
@@ -166,6 +171,11 @@ async def _phase2_generate(
         if fp else "Flight: unavailable, please book separately"
     )
 
+    warning_pois = [p.name for p in selected_pois.values() if p.warning]
+    warning_instruction = ""
+    if warning_pois:
+        warning_instruction = f"\nWarning POIs (⚠️): {', '.join(warning_pois)}\nFor each ⚠️ POI in the day plan, add a practical tip in transport_note, e.g. \"灵隐寺近期反馈排队较长，建议早上8点前到达\"\n"
+
     prompt = f"""Generate a detailed travel itinerary for plan {plan_skeleton['plan_id']}.
 
 {flight_line}
@@ -175,7 +185,7 @@ Selected POIs:
 
 Driving times (from 高德 API):
 {time_notes or "  (no pre-computed times for this selection)"}
-
+{warning_instruction}
 Day plan assignments: {json.dumps(plan_skeleton['days'])}
 
 Return JSON:
@@ -235,6 +245,7 @@ async def run(state: TravelPlanState, config: RunnableConfig = None) -> dict:
     user_flight_choice = state.get("user_flight_choice")
     user_poi_prefs = state.get("user_poi_prefs")
 
+    pois = _preprocess_pois(pois, interests)
     poi_map = {p.poi_id: p for p in pois}
     pair_map = {fp.pair_id: fp for fp in pairs}
 
