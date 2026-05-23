@@ -19,7 +19,8 @@ def _base_state():
 
 
 @pytest.mark.asyncio
-async def test_parse_input_calls_interrupt(mocker):
+async def test_parse_input_respects_existing_origin_airports(mocker):
+    """Test that origin_airports from state (set by collect_intent) is respected."""
     mocker.patch("agent.nodes.parse_input._llm_parse_destination", new_callable=AsyncMock, return_value={
         "region": "甘孜州", "city_names": ["甘孜藏族自治州"],
         "destination_airports": ["CTU"], "origin_airports": ["PVG"],
@@ -27,17 +28,18 @@ async def test_parse_input_calls_interrupt(mocker):
     })
     mock_amap = MagicMock()
     mock_amap.get_district_codes = AsyncMock(return_value={"甘孜藏族自治州": "513300"})
-    mock_interrupt = mocker.patch("agent.nodes.parse_input.interrupt", return_value={"text": ""})
 
+    # origin_airports already set by collect_intent
+    state = {**_base_state(), "origin_airports": ["PEK", "PKX"]}
     from agent.nodes.parse_input import run
-    await run(_base_state(), _make_config(mock_amap))
-    mock_interrupt.assert_called_once()
-    call_data = mock_interrupt.call_args[0][0]
-    assert call_data["type"] == "confirm_params"
+    result = await run(state, _make_config(mock_amap))
+    # Should use state's origin_airports, not LLM-parsed ones
+    assert result["origin_airports"] == ["PEK", "PKX"]
 
 
 @pytest.mark.asyncio
-async def test_parse_input_applies_corrections_when_user_replies(mocker):
+async def test_parse_input_fallback_to_llm_airports(mocker):
+    """Test that LLM-parsed airports are used if not in state."""
     mocker.patch("agent.nodes.parse_input._llm_parse_destination", new_callable=AsyncMock, return_value={
         "region": "甘孜州", "city_names": ["甘孜藏族自治州"],
         "destination_airports": ["CTU"], "origin_airports": ["PVG"],
@@ -45,18 +47,11 @@ async def test_parse_input_applies_corrections_when_user_replies(mocker):
     })
     mock_amap = MagicMock()
     mock_amap.get_district_codes = AsyncMock(return_value={"甘孜藏族自治州": "513300"})
-    mocker.patch("agent.nodes.parse_input.interrupt", return_value={"text": "改成北京出发"})
-    mock_correct = mocker.patch("agent.nodes.parse_input._apply_corrections", new_callable=AsyncMock,
-        return_value={
-            "region": "甘孜州", "city_names": ["甘孜藏族自治州"],
-            "destination_airports": ["CTU"], "origin_airports": ["PEK", "PKX"],
-            "search_keywords": ["川西"],
-        })
 
     from agent.nodes.parse_input import run
     result = await run(_base_state(), _make_config(mock_amap))
-    mock_correct.assert_called_once()
-    assert "PEK" in result["origin_airports"]
+    # Should use LLM-parsed airports as fallback
+    assert result["origin_airports"] == ["PVG"]
 
 
 @pytest.mark.asyncio
@@ -68,7 +63,6 @@ async def test_parse_input_single_date(mocker):
     })
     mock_amap = MagicMock()
     mock_amap.get_district_codes = AsyncMock(return_value={"甘孜藏族自治州": "513300"})
-    mocker.patch("agent.nodes.parse_input.interrupt", return_value={"text": ""})
 
     state = {**_base_state(), "depart_date": "2026-07-01"}
     from agent.nodes.parse_input import run

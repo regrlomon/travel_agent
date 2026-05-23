@@ -3,7 +3,6 @@ import logging
 from datetime import date, timedelta
 import litellm
 from langchain_core.runnables import RunnableConfig
-from langgraph.types import interrupt
 from agent.state import TravelPlanState
 from agent import extract_json
 
@@ -35,30 +34,6 @@ Return only valid JSON, no markdown."""
         raise
 
 
-async def _apply_corrections(parsed: dict, user_text: str, config: RunnableConfig) -> dict:
-    """Single LLM call to apply user's natural-language corrections to parsed params."""
-    prompt = f"""Current parsed travel params:
-{json.dumps(parsed, ensure_ascii=False)}
-
-User correction: "{user_text}"
-
-Apply the correction and return the updated JSON with the same keys. Only change what the user asked.
-Return only valid JSON, no markdown."""
-    try:
-        resp = await litellm.acompletion(
-            model=os.getenv("LLM_MODEL", "deepseek/deepseek-chat"),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-        )
-    except Exception:
-        logger.exception("LLM call failed in _apply_corrections, user_text=%r", user_text)
-        raise
-    try:
-        return json.loads(extract_json(resp.choices[0].message.content))
-    except json.JSONDecodeError:
-        logger.error("JSON parse failed in _apply_corrections, raw=%r", resp.choices[0].message.content)
-        raise
-
 
 def _expand_dates(depart_date: str | None) -> list[date]:
     if depart_date:
@@ -68,37 +43,22 @@ def _expand_dates(depart_date: str | None) -> list[date]:
 
 
 async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
-    logger.info("[parse_input] start, destination=%r origin=%r", state.get("destination"), state.get("origin"))
     tools = config["configurable"]["tools"]
     parsed = await _llm_parse_destination(state["destination"], state["origin"])
 
-    try:
-        code_map = await tools["amap"].get_district_codes(parsed["city_names"])
-    except Exception:
-        logger.exception("高德 get_district_codes failed, city_names=%r", parsed["city_names"])
-        raise
+    code_map = await tools["amap"].get_district_codes(parsed["city_names"])
     amap_cities = list(code_map.values())
 
-    user_reply = interrupt({
-        "type": "confirm_params",
-        "message": (
-            f"已解析：出发 {parsed['origin_airports']}，"
-            f"目的地 {parsed['destination_airports']}，共 {state['duration_days']} 天。"
-            "有需要修改吗？"
-        ),
-        "parsed": parsed,
-    })
+    # collect_intent already resolved origin airports via AirportsClient;
+    # only fall back to LLM-parsed airports if not set
+    origin_airports = state.get("origin_airports") or parsed["origin_airports"]
 
-    if user_reply.get("text"):
-        parsed = await _apply_corrections(parsed, user_reply["text"], config)
-
-    result = {
-        "destination_region": parsed["region"],
-        "destination_amap_cities": amap_cities,
-        "destination_airports": parsed["destination_airports"],
-        "origin_airports": parsed["origin_airports"],
-        "depart_dates": _expand_dates(state.get("depart_date")),
-        "search_keywords": parsed["search_keywords"],
+    return {
+        "destination_region":       parsed["region"],
+        "destination_amap_cities":  amap_cities,
+        "destination_airports":     parsed["destination_airports"],
+        "origin_airports":          origin_airports,
+        "depart_dates":             _expand_dates(state.get("depart_date")),
+        "search_keywords":          parsed["search_keywords"],
     }
-    logger.info("[parse_input] done, region=%r airports=%r", result["destination_region"], result["destination_airports"])
-    return result
+
