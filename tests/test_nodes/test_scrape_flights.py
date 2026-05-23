@@ -146,7 +146,7 @@ def test_assemble_pairs_max_3():
     assert len(pairs) <= 3
 
 
-def test_assemble_pairs_no_pref_unchanged_behavior():
+def test_assemble_pairs_airport_matching():
     """无偏好时：有效配对，pair_id 不为空。"""
     out1 = make_flight(7, ("PVG", "DCY"), flight_no="A1")
     out2 = make_flight(9, ("PVG", "CTU"), flight_no="A2")
@@ -157,3 +157,14 @@ def test_assemble_pairs_no_pref_unchanged_behavior():
     for p in pairs:
         assert p.pair_id
         assert p.return_flight.depart_airport == p.outbound.arrive_airport
+
+
+def test_assemble_pairs_no_return_flight_reuse():
+    """Same return flight should not appear in multiple pairs."""
+    out1 = make_flight(7,  ("CAN", "LXA"), flight_no="O1")
+    out2 = make_flight(9,  ("CAN", "LXA"), flight_no="O2")
+    out3 = make_flight(11, ("CAN", "LXA"), flight_no="O3")
+    ret  = make_flight(16, ("LXA", "CAN"), flight_no="R1")  # only one return flight
+    pairs = _assemble_flight_pairs([out1, out2, out3], [ret])
+    # Only 1 pair should be returned since there's only 1 unique return flight
+    assert len(pairs) == 1

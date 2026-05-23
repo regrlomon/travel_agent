@@ -86,8 +86,8 @@ def _raw_to_flight(raw: dict, depart_date: date) -> Flight:
 
 
 def _assemble_flight_pairs(
-    outbound_flights: list,
-    return_flights: list,
+    outbound_flights: list[Flight],
+    return_flights: list[Flight],
     depart_time_pref: str | None = None,
     return_time_pref: str | None = None,
     max_pairs: int = 3,
@@ -105,6 +105,7 @@ def _assemble_flight_pairs(
 
     pairs: list[FlightPair] = []
     seen_flight_no: set[str] = set()
+    seen_ret_no: set[str] = set()
 
     for out in ranked_out:
         if len(pairs) >= max_pairs:
@@ -115,6 +116,8 @@ def _assemble_flight_pairs(
         if not rets:
             continue
         best_ret = rets[0]  # already sorted by return time preference
+        if best_ret.flight_no in seen_ret_no:
+            continue
         pairs.append(FlightPair(
             pair_id=str(uuid.uuid4()),
             outbound=out,
@@ -122,6 +125,7 @@ def _assemble_flight_pairs(
             total_price=out.price + best_ret.price,
         ))
         seen_flight_no.add(out.flight_no)
+        seen_ret_no.add(best_ret.flight_no)
 
     return pairs
 
