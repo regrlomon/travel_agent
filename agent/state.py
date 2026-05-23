@@ -29,7 +29,6 @@ class TravelPlanState(TypedDict, total=False):
     destination_amap_cities: list[str]
     destination_airports: list[str]
     depart_dates: list[date]
-    search_keywords: list[str]
 
     # ── Written by ② discover_pois ──────────────────────────────────────
     pois: list[POI]

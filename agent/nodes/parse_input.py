@@ -27,7 +27,6 @@ async def _llm_parse_destination(destination: str, origin: str, config=None) -> 
 Return JSON with:
 - region: human-readable string e.g. "甘孜州+阿坝州"
 - city_names: list of Chinese admin district names e.g. ["甘孜藏族自治州"]
-- search_keywords: 3-5 Chinese queries e.g. ["川西 攻略"]
 Return only valid JSON, no markdown."""
     logger.info("[llm_input] _llm_parse_destination chars=%d\n%s", len(prompt), prompt)
     try:
@@ -74,5 +73,4 @@ async def run(state: TravelPlanState, config: RunnableConfig) -> dict:
         "destination_airports":     destination_airports,
         "origin_airports":          origin_airports,
         "depart_dates":             _expand_dates(state.get("depart_date")),
-        "search_keywords":          parsed["search_keywords"],
     }

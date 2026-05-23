@@ -24,7 +24,6 @@ async def test_parse_input_respects_existing_origin_airports(mocker):
     mocker.patch("agent.nodes.parse_input._llm_parse_destination", new_callable=AsyncMock, return_value={
         "region": "甘孜州", "city_names": ["甘孜藏族自治州"],
         "destination_airports": ["CTU"], "origin_airports": ["PVG"],
-        "search_keywords": ["川西 攻略"],
     })
     mock_amap = MagicMock()
     mock_amap.get_district_codes = AsyncMock(return_value={"甘孜藏族自治州": "513300"})
@@ -43,7 +42,6 @@ async def test_parse_input_fallback_to_static_lookup(mocker):
     mocker.patch("agent.nodes.parse_input._llm_parse_destination", new_callable=AsyncMock, return_value={
         "region": "甘孜州", "city_names": ["甘孜藏族自治州"],
         "destination_airports": ["CTU"],
-        "search_keywords": ["川西"],
     })
     mock_amap = MagicMock()
     mock_amap.get_district_codes = AsyncMock(return_value={"甘孜藏族自治州": "513300"})
@@ -60,7 +58,6 @@ async def test_parse_input_single_date(mocker):
     mocker.patch("agent.nodes.parse_input._llm_parse_destination", new_callable=AsyncMock, return_value={
         "region": "甘孜州", "city_names": ["甘孜藏族自治州"],
         "destination_airports": ["CTU"], "origin_airports": ["PVG"],
-        "search_keywords": ["川西"],
     })
     mock_amap = MagicMock()
     mock_amap.get_district_codes = AsyncMock(return_value={"甘孜藏族自治州": "513300"})
@@ -69,3 +66,20 @@ async def test_parse_input_single_date(mocker):
     from agent.nodes.parse_input import run
     result = await run(state, _make_config(mock_amap))
     assert result["depart_dates"] == [date(2026, 7, 1)]
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_return_search_keywords(mocker):
+    mocker.patch(
+        "agent.nodes.parse_input._llm_parse_destination",
+        new_callable=AsyncMock,
+        return_value={"region": "上海", "city_names": ["上海市"]},
+    )
+    mock_amap = MagicMock()
+    mock_amap.get_district_codes = AsyncMock(return_value={"上海市": "310100"})
+    state = {**_base_state(), "destination": "上海", "origin": "北京"}
+    from agent.nodes.parse_input import run
+    result = await run(state, _make_config(mock_amap))
+    assert "search_keywords" not in result
+    assert "destination_region" in result
+    assert result["destination_amap_cities"] == ["310100"]
